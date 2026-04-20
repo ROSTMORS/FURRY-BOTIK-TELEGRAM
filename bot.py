@@ -31,6 +31,12 @@ from dotenv import load_dotenv
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
+# ДИАГНОСТИКА
+print(f"DEBUG: BOT_TOKEN = {BOT_TOKEN}")
+print(f"DEBUG: All env keys = {list(os.environ.keys())}")
+if not BOT_TOKEN:
+    print("ERROR: BOT_TOKEN is None! Check Railway Variables")
+
 # !! Укажи сюда свои Telegram user_id через запятую !!
 _admin_env = os.getenv("ADMIN_IDS", "")
 ADMIN_IDS: list[int] = [int(x.strip()) for x in _admin_env.split(",") if x.strip().isdigit()]
