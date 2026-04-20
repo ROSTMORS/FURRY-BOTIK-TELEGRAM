@@ -1,9 +1,15 @@
 """
-Telegram RP-бот v2.0
+Telegram RP-бот v3.0
 Использует aiogram 3.x и SQLite.
-Изменения v2: фикс инвентаря, упоминания пользователей, админ-команды,
-              расширенный /quiz (20+ вопросов, лимит 10/день),
-              расширенный /shop (12 предметов), новые эффекты.
+v2: фикс инвентаря, упоминания пользователей, админ-команды,
+    расширенный /quiz (20+ вопросов, лимит 10/день),
+    расширенный /shop (12 предметов), новые эффекты.
+v3: ДОБАВЛЕНО (без изменения существующего):
+    - Достижения (12 ачивок) + /achievements + /achievement
+    - Фурри-ранги (по уровню) + /rank + кнопка в /leaderboard
+    - Кастомные РП-команды + /create_rp + /my_rp + /delete_rp + /top_rp
+    - Статистика + /stats + /top_activity + /top_rp_actions
+    - Случайный бонус дня + /daily_bonus + /bonus_info
 """
 
 import asyncio
@@ -59,6 +65,7 @@ def get_conn():
 def init_db():
     conn = get_conn()
     c = conn.cursor()
+    # ── СУЩЕСТВУЮЩИЕ ТАБЛИЦЫ (НЕ МЕНЯТЬ) ──
     c.executescript("""
         CREATE TABLE IF NOT EXISTS users (
             user_id   INTEGER PRIMARY KEY,
@@ -129,6 +136,46 @@ def init_db():
             hat_last_ts INTEGER DEFAULT 0,
             dragon_egg  INTEGER DEFAULT 0,
             dragon_ts   INTEGER DEFAULT 0
+        );
+    """)
+
+    # ── НОВЫЕ ТАБЛИЦЫ v3 ──
+    c.executescript("""
+        -- Достижения пользователей
+        CREATE TABLE IF NOT EXISTS achievements (
+            user_id        INTEGER,
+            achievement_id INTEGER,
+            earned_at      INTEGER,
+            PRIMARY KEY (user_id, achievement_id)
+        );
+
+        -- Кастомные РП-команды
+        CREATE TABLE IF NOT EXISTS custom_rp (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id    INTEGER,
+            keyword    TEXT,
+            response   TEXT,
+            uses_count INTEGER DEFAULT 0,
+            created_at INTEGER,
+            UNIQUE(user_id, keyword)
+        );
+
+        -- Статистика пользователей
+        CREATE TABLE IF NOT EXISTS user_stats (
+            user_id             INTEGER PRIMARY KEY,
+            total_rp_actions    INTEGER DEFAULT 0,
+            total_games_played  INTEGER DEFAULT 0,
+            total_duels_won     INTEGER DEFAULT 0,
+            total_money_given   INTEGER DEFAULT 0,
+            total_quiz_correct  INTEGER DEFAULT 0
+        );
+
+        -- Лог случайного бонуса дня
+        CREATE TABLE IF NOT EXISTS daily_bonus_log (
+            user_id    INTEGER,
+            bonus_date TEXT,
+            bonus_type TEXT,
+            PRIMARY KEY (user_id, bonus_date)
         );
     """)
     conn.commit()
@@ -291,6 +338,8 @@ SHOP_ITEMS = {
     10: {"name": "🎩 Магическая шляпа",    "price": 1000, "desc": "Рандомный предмет раз в 24ч"},
     11: {"name": "🐉 Яйцо дракона",        "price": 2500, "desc": "Вылупляется через 7 дней → редкий приз"},
     12: {"name": "👑 Корона",              "price": 5000, "desc": "+50 XP, статус «Властелин» в топе"},
+    # Предмет для достижения ID 12 (Истинный фурри)
+    13: {"name": "🦊 Лисий хвост",         "price": 0,    "desc": "Редкий предмет. Награда за достижение."},
 }
 
 PREDICTIONS = [
@@ -403,6 +452,356 @@ QUIZ_QUESTIONS = [
     {"q": "Сколько минут в сутках?",                              "o": ["1200", "1440", "1380", "1320"],                   "a": 1},
 ]
 
+# ═══════════════════════════════════════════════════════════════════
+# ─────────────────── НОВЫЙ ФУНКЦИОНАЛ v3 ──────────────────────────
+# ═══════════════════════════════════════════════════════════════════
+
+# ─────────────────── ФУРРИ-РАНГИ ──────────────────────────────────
+
+# Список рангов: (мин. уровень, название, эмодзи)
+FURRY_RANKS = [
+    (1,  "Детёныш",          "🐾"),
+    (4,  "Следопыт",         "🐾✨"),
+    (8,  "Лапка",            "🐾⭐"),
+    (12, "Хвостатый",        "🦊"),
+    (16, "Клыкастый",        "🐺"),
+    (20, "Хранитель стаи",   "🌙"),
+    (25, "Легенда пустыни",  "🌵🦎"),
+    (30, "Дух предков",      "🌟🦊"),
+]
+
+def get_rank(level: int) -> tuple[str, str]:
+    """Получить (название, эмодзи) ранга для данного уровня."""
+    current = FURRY_RANKS[0]
+    for min_lvl, name, emoji in FURRY_RANKS:
+        if level >= min_lvl:
+            current = (name, emoji)
+        else:
+            break
+    return current
+
+def get_next_rank(level: int) -> Optional[tuple[int, str, str]]:
+    """Получить (нужный уровень, название, эмодзи) следующего ранга или None."""
+    for min_lvl, name, emoji in FURRY_RANKS:
+        if min_lvl > level:
+            return (min_lvl, name, emoji)
+    return None
+
+# ─────────────────── ДОСТИЖЕНИЯ ───────────────────────────────────
+
+ACHIEVEMENTS = {
+    1:  {"name": "Душа компании",      "desc": "Совершить 100 РП-действий",           "reward": "500 монет",       "icon": "🎭"},
+    2:  {"name": "Семьянин",           "desc": "Прожить в браке 30 дней",             "reward": "1000 монет",      "icon": "💑"},
+    3:  {"name": "Счастливчик",        "desc": "Выиграть 10 дуэлей подряд",           "reward": "2000 монет",      "icon": "🍀"},
+    4:  {"name": "Эрудит",             "desc": "Ответить верно на 50 вопросов",       "reward": "150 XP",          "icon": "🎓"},
+    5:  {"name": "Властелин драконов", "desc": "Купить Яйцо дракона и вылупить",      "reward": "редкий предмет",  "icon": "🐉"},
+    6:  {"name": "Богатей",            "desc": "Накопить 10 000 монет",               "reward": "статус в /top",   "icon": "💰"},
+    7:  {"name": "Щедрая душа",        "desc": "Подарить другим 5000 монет",          "reward": "500 монет",       "icon": "🎁"},
+    8:  {"name": "Азартный игрок",     "desc": "Сыграть 100 раз в игры",             "reward": "300 монет",       "icon": "🎰"},
+    9:  {"name": "Любимчик фортуны",   "desc": "Выиграть в /slots 3 раза подряд",    "reward": "500 монет",       "icon": "🌟"},
+    10: {"name": "Силач",              "desc": "Выиграть 25 дуэлей",                 "reward": "400 монет",       "icon": "⚔️"},
+    11: {"name": "Мастер РП",          "desc": "Создать 5 кастомных РП-команд",       "reward": "200 монет",       "icon": "✍️"},
+    12: {"name": "Истинный фурри",     "desc": "Достичь 20-го уровня",               "reward": "1000 монет + Лисий хвост", "icon": "🦊"},
+}
+
+def has_achievement(user_id: int, ach_id: int) -> bool:
+    """Проверить, получено ли достижение."""
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("SELECT 1 FROM achievements WHERE user_id=? AND achievement_id=?", (user_id, ach_id))
+    row = c.fetchone()
+    conn.close()
+    return bool(row)
+
+def grant_achievement(user_id: int, ach_id: int) -> bool:
+    """
+    Выдать достижение, если не выдано.
+    Возвращает True, если выдано впервые (для уведомления).
+    """
+    if has_achievement(user_id, ach_id):
+        return False
+    conn = get_conn()
+    c = conn.cursor()
+    try:
+        c.execute(
+            "INSERT OR IGNORE INTO achievements (user_id, achievement_id, earned_at) VALUES (?, ?, ?)",
+            (user_id, ach_id, int(time.time())),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    # Выдать награду
+    ach = ACHIEVEMENTS[ach_id]
+    if ach_id == 1:
+        add_balance(user_id, 500)
+    elif ach_id == 2:
+        add_balance(user_id, 1000)
+    elif ach_id == 3:
+        add_balance(user_id, 2000)
+    elif ach_id == 4:
+        add_xp(user_id, 150)
+    elif ach_id == 5:
+        _add_to_inventory(user_id, random.choice([3, 6, 7, 9]))
+    elif ach_id == 6:
+        pass  # статус, без монет
+    elif ach_id == 7:
+        add_balance(user_id, 500)
+    elif ach_id == 8:
+        add_balance(user_id, 300)
+    elif ach_id == 9:
+        add_balance(user_id, 500)
+    elif ach_id == 10:
+        add_balance(user_id, 400)
+    elif ach_id == 11:
+        add_balance(user_id, 200)
+    elif ach_id == 12:
+        add_balance(user_id, 1000)
+        _add_to_inventory(user_id, 13)  # Лисий хвост
+    return True
+
+async def check_achievements(user_id: int, message: Message):
+    """
+    Проверить все условия достижений для пользователя и выдать при выполнении.
+    Отправляет сообщение в чат при получении нового достижения.
+    """
+    u = get_user(user_id)
+    if not u:
+        return
+
+    stats = get_user_stats(user_id)
+    newly_earned = []
+
+    # ID 1: Душа компании — 100 РП-действий
+    if not has_achievement(user_id, 1) and stats["total_rp_actions"] >= 100:
+        if grant_achievement(user_id, 1):
+            newly_earned.append(1)
+
+    # ID 2: Семьянин — 30 дней в браке
+    if not has_achievement(user_id, 2):
+        m = get_marriage(user_id)
+        if m:
+            days_married = (int(time.time()) - m["married_since"]) // 86400
+            if days_married >= 30:
+                if grant_achievement(user_id, 2):
+                    newly_earned.append(2)
+
+    # ID 4: Эрудит — 50 правильных ответов в квизе
+    if not has_achievement(user_id, 4) and stats["total_quiz_correct"] >= 50:
+        if grant_achievement(user_id, 4):
+            newly_earned.append(4)
+
+    # ID 6: Богатей — баланс >= 10 000
+    if not has_achievement(user_id, 6) and u["balance"] >= 10000:
+        if grant_achievement(user_id, 6):
+            newly_earned.append(6)
+
+    # ID 7: Щедрая душа — отдано >= 5000 монет
+    if not has_achievement(user_id, 7) and stats["total_money_given"] >= 5000:
+        if grant_achievement(user_id, 7):
+            newly_earned.append(7)
+
+    # ID 8: Азартный игрок — 100 игр
+    if not has_achievement(user_id, 8) and stats["total_games_played"] >= 100:
+        if grant_achievement(user_id, 8):
+            newly_earned.append(8)
+
+    # ID 10: Силач — 25 побед в дуэлях
+    if not has_achievement(user_id, 10) and stats["total_duels_won"] >= 25:
+        if grant_achievement(user_id, 10):
+            newly_earned.append(10)
+
+    # ID 11: Мастер РП — 5 кастомных команд
+    if not has_achievement(user_id, 11):
+        conn = get_conn(); c = conn.cursor()
+        c.execute("SELECT COUNT(*) FROM custom_rp WHERE user_id=?", (user_id,))
+        cnt = c.fetchone()[0]; conn.close()
+        if cnt >= 5:
+            if grant_achievement(user_id, 11):
+                newly_earned.append(11)
+
+    # ID 12: Истинный фурри — уровень >= 20
+    if not has_achievement(user_id, 12) and u["level"] >= 20:
+        if grant_achievement(user_id, 12):
+            newly_earned.append(12)
+
+    # Отправляем уведомления о новых достижениях
+    for ach_id in newly_earned:
+        ach = ACHIEVEMENTS[ach_id]
+        await message.answer(
+            f"🏅 <b>Новое достижение!</b>\n"
+            f"{ach['icon']} <b>{ach['name']}</b>\n"
+            f"<i>{ach['desc']}</i>\n"
+            f"🎁 Награда: {ach['reward']}",
+            parse_mode="HTML",
+        )
+
+def check_achievement_dragon(user_id: int) -> bool:
+    """Проверить достижение #5 (Властелин драконов) при вылуплении яйца."""
+    if not has_achievement(user_id, 5):
+        return grant_achievement(user_id, 5)
+    return False
+
+# ─────────────────── СТАТИСТИКА ───────────────────────────────────
+
+def ensure_stats(user_id: int):
+    """Создать запись статистики если не существует."""
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("INSERT OR IGNORE INTO user_stats (user_id) VALUES (?)", (user_id,))
+    conn.commit()
+    conn.close()
+
+def get_user_stats(user_id: int) -> dict:
+    ensure_stats(user_id)
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute(
+        "SELECT total_rp_actions, total_games_played, total_duels_won, "
+        "total_money_given, total_quiz_correct FROM user_stats WHERE user_id=?",
+        (user_id,),
+    )
+    row = c.fetchone()
+    conn.close()
+    if row:
+        return dict(zip([
+            "total_rp_actions", "total_games_played", "total_duels_won",
+            "total_money_given", "total_quiz_correct"
+        ], row))
+    return {k: 0 for k in ["total_rp_actions","total_games_played","total_duels_won","total_money_given","total_quiz_correct"]}
+
+def stat_increment(user_id: int, field: str, amount: int = 1):
+    """Увеличить поле статистики на amount."""
+    ensure_stats(user_id)
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute(f"UPDATE user_stats SET {field} = {field} + ? WHERE user_id=?", (amount, user_id))
+    conn.commit()
+    conn.close()
+
+# ─────────────────── БОНУС ДНЯ ────────────────────────────────────
+
+# Бонусы: (ключ, название, вес)
+DAILY_BONUSES = [
+    ("lucky_slots",    "🍀 День удачи: +20% к выигрышу в /slots",      15),
+    ("rp_xp",         "🤗 День объятий: +10 XP за РП-действие",        15),
+    ("daily_coins",   "💰 День богатства: +200 монет к /daily",        15),
+    ("quiz_xp",       "📖 День знаний: +30 XP за /quiz",              10),
+    ("love_rp",       "💝 День любви: усиленные РП-ответы",            10),
+    ("free_slots",    "🎲 День азарта: одна бесплатная ставка в /slots",10),
+    ("give_xp",       "🎁 День подарков: +20 XP отправителю при /give",10),
+    ("double_xp",     "⚡ Двойной опыт: весь XP x2",                  10),
+    ("protect_xp",    "🛡️ День защиты: 'защитить' даёт +15 XP",        5),
+]
+
+def get_today_str() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+def get_active_bonus(user_id: int) -> Optional[str]:
+    """Получить активный бонус пользователя на сегодня."""
+    today = get_today_str()
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute(
+        "SELECT bonus_type FROM daily_bonus_log WHERE user_id=? AND bonus_date=?",
+        (user_id, today),
+    )
+    row = c.fetchone()
+    conn.close()
+    return row[0] if row else None
+
+def activate_bonus(user_id: int) -> Optional[str]:
+    """Активировать случайный бонус дня. Возвращает тип или None если уже активен."""
+    today = get_today_str()
+    # Проверяем, не активирован ли уже
+    if get_active_bonus(user_id):
+        return None
+    # Взвешенный случайный выбор
+    types = [b[0] for b in DAILY_BONUSES]
+    weights = [b[2] for b in DAILY_BONUSES]
+    bonus_type = random.choices(types, weights=weights, k=1)[0]
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute(
+        "INSERT OR IGNORE INTO daily_bonus_log (user_id, bonus_date, bonus_type) VALUES (?, ?, ?)",
+        (user_id, today, bonus_type),
+    )
+    conn.commit()
+    conn.close()
+    return bonus_type
+
+def get_bonus_display(bonus_type: str) -> str:
+    """Получить красивое название бонуса по ключу."""
+    for key, name, _ in DAILY_BONUSES:
+        if key == bonus_type:
+            return name
+    return bonus_type
+
+def apply_xp_bonus(user_id: int, base_xp: int) -> int:
+    """Применить бонус двойного XP если активен."""
+    bonus = get_active_bonus(user_id)
+    if bonus == "double_xp":
+        return base_xp * 2
+    return base_xp
+
+# ─────────────────── КАСТОМНЫЕ РП-КОМАНДЫ ─────────────────────────
+
+def get_custom_rp_pattern(user_id: int):
+    """Получить все кастомные ключевые слова пользователя."""
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("SELECT keyword, response FROM custom_rp WHERE user_id=?", (user_id,))
+    rows = c.fetchall()
+    conn.close()
+    return {row[0]: row[1] for row in rows}
+
+def check_custom_rp(user_id: int, text: str) -> Optional[tuple[str, str]]:
+    """
+    Проверить, начинается ли сообщение с кастомного ключевого слова пользователя.
+    Возвращает (keyword, response) или None.
+    """
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("SELECT keyword, response, id FROM custom_rp WHERE user_id=?", (user_id,))
+    rows = c.fetchall()
+    conn.close()
+    lower_text = text.strip().lower()
+    for keyword, response, rp_id in rows:
+        if lower_text.startswith(keyword.lower()):
+            # Увеличиваем счётчик использования
+            conn2 = get_conn()
+            c2 = conn2.cursor()
+            c2.execute("UPDATE custom_rp SET uses_count=uses_count+1 WHERE id=?", (rp_id,))
+            conn2.commit()
+            conn2.close()
+            return (keyword, response)
+    return None
+
+# ─────────────────── STREAK (СЕРИИ ПОБЕД) ─────────────────────────
+# Хранится в памяти (сбрасывается при перезапуске — для простоты)
+_duel_win_streak: dict[int, int] = {}
+_slots_win_streak: dict[int, int] = {}
+
+def record_duel_result(user_id: int, won: bool) -> int:
+    """Обновить серию побед в дуэлях. Возвращает текущую серию."""
+    if won:
+        _duel_win_streak[user_id] = _duel_win_streak.get(user_id, 0) + 1
+    else:
+        _duel_win_streak[user_id] = 0
+    return _duel_win_streak.get(user_id, 0)
+
+def record_slots_result(user_id: int, won: bool) -> int:
+    """Обновить серию побед в слотах. Возвращает текущую серию."""
+    if won:
+        _slots_win_streak[user_id] = _slots_win_streak.get(user_id, 0) + 1
+    else:
+        _slots_win_streak[user_id] = 0
+    return _slots_win_streak.get(user_id, 0)
+
+# ═══════════════════════════════════════════════════════════════════
+# ─────────────────── КОМАНДЫ (СУЩЕСТВУЮЩИЕ) ───────────────────────
+# ═══════════════════════════════════════════════════════════════════
+
 # ─────────────────────────── /START ───────────────────────────────
 
 @router.message(CommandStart())
@@ -411,10 +810,13 @@ async def cmd_start(message: Message):
     text = (
         "👋 Привет\\! Я — многофункциональный РП\\-бот\\!\n\n"
         "🎭 *РП\\-действия* — ответь на сообщение командой: _обнять_, _поцеловать_, _погладить_\\.\\.\\.\n"
-        "🏆 *Уровни и XP* — /level, /leaderboard\n"
+        "🏆 *Уровни и XP* — /level, /leaderboard, /rank\n"
         "🎲 *Игры* — /dice, /d20, /coin, /rps, /slots, /duel, /quiz\n"
         "💰 *Экономика* — /balance, /daily, /give, /shop, /buy, /inventory\n"
-        "💍 *Браки* — «Предложить брак @user», /marry, /divorce\n\n"
+        "💍 *Браки* — «Предложить брак @user», /marry, /divorce\n"
+        "🏅 *Достижения* — /achievements\n"
+        "📊 *Статистика* — /stats\n"
+        "🎁 *Бонус дня* — /daily\\_bonus\n\n"
         "📋 Полный список: /help"
     )
     await message.answer(text, parse_mode="MarkdownV2")
@@ -434,7 +836,8 @@ async def cmd_help(message: Message):
         "взъерошить, поправить шапку, защитить, пожалеть, похитить\n\n"
         "<b>🏆 Уровни</b>\n"
         "/level — ваш уровень и XP\n"
-        "/leaderboard — топ-10 (по уровню / деньгам / бракам)\n\n"
+        "/rank — фурри-ранг и прогресс\n"
+        "/leaderboard — топ-10 (по уровню / деньгам / бракам / рангу)\n\n"
         "<b>🎲 Игры</b>\n"
         "/dice — кубик 1-6\n"
         "/d20 — кубик 1-20\n"
@@ -455,7 +858,22 @@ async def cmd_help(message: Message):
         "Предложить брак @user — предложение\n"
         "/marry — информация о браке\n"
         "/divorce — развод\n"
-        "/top_marriages — топ долгих браков\n"
+        "/top_marriages — топ долгих браков\n\n"
+        "<b>🏅 Достижения</b>\n"
+        "/achievements — список достижений\n"
+        "/achievement [номер] — подробнее о достижении\n\n"
+        "<b>📊 Статистика</b>\n"
+        "/stats [@user] — статистика пользователя\n"
+        "/top_activity — топ по активности\n"
+        "/top_rp_actions — топ по РП-действиям\n\n"
+        "<b>🎭 Кастомные РП</b>\n"
+        "/create_rp [слово] [текст] — создать команду\n"
+        "/my_rp — мои команды\n"
+        "/delete_rp [слово] — удалить\n"
+        "/top_rp — топ кастомных команд\n\n"
+        "<b>🎁 Бонус дня</b>\n"
+        "/daily_bonus — активировать бонус дня\n"
+        "/bonus_info — информация о бонусе\n"
     )
     await message.answer(text, parse_mode="HTML")
 
@@ -467,21 +885,24 @@ async def cmd_level(message: Message):
     u = get_user(message.from_user.id)
     level = calc_level(u["xp"])
     xp_needed = xp_for_level(level + 1) - u["xp"]
+    rank_name, rank_emoji = get_rank(level)
     await message.answer(
         f"🏆 <b>{message.from_user.full_name}</b>\n"
         f"Уровень: <b>{level}</b>\n"
+        f"Ранг: {rank_emoji} <b>{rank_name}</b>\n"
         f"XP: <b>{u['xp']}</b>\n"
         f"До следующего уровня: <b>{xp_needed} XP</b>",
         parse_mode="HTML",
     )
 
-# ─────────────────────── /LEADERBOARD ─────────────────────────────
+# ─────────────────────────── /LEADERBOARD ─────────────────────────
 
 def make_leaderboard_kb():
     return InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text="🏆 По уровню",  callback_data="lb_xp"),
         InlineKeyboardButton(text="💰 По деньгам", callback_data="lb_money"),
         InlineKeyboardButton(text="💍 По бракам",  callback_data="lb_marriages"),
+        InlineKeyboardButton(text="🦊 По рангу",   callback_data="lb_rank"),
     ]])
 
 @router.message(Command("leaderboard"))
@@ -491,7 +912,6 @@ async def cmd_leaderboard(message: Message):
 async def _send_leaderboard(target, mode: str):
     conn = get_conn()
     c = conn.cursor()
-    # Проверяем наличие предмета Корона (item_id=12) для статуса "Властелин"
     if mode == "lb_xp":
         c.execute("SELECT user_id, username, xp, level FROM users ORDER BY xp DESC LIMIT 10")
         rows = c.fetchall()
@@ -508,6 +928,14 @@ async def _send_leaderboard(target, mode: str):
             crown = _has_item(uid, 12)
             prefix = "👑 " if crown else ""
             lines.append(f"{i}. {prefix}{name or '???'} — {bal} 🪙")
+    elif mode == "lb_rank":
+        # Сортировка по уровню (=рангу)
+        c.execute("SELECT user_id, username, level FROM users ORDER BY level DESC LIMIT 10")
+        rows = c.fetchall()
+        lines = ["🦊 <b>Топ по рангу:</b>"]
+        for i, (uid, name, lvl) in enumerate(rows, 1):
+            rank_name, rank_emoji = get_rank(lvl)
+            lines.append(f"{i}. {name or '???'} — {rank_emoji} {rank_name} (Ур.{lvl})")
     else:
         c.execute(
             "SELECT u1.username, u2.username, m.married_since "
@@ -537,7 +965,7 @@ def _has_item(user_id: int, item_id: int) -> bool:
     conn.close()
     return bool(row)
 
-@router.callback_query(F.data.in_({"lb_xp", "lb_money", "lb_marriages"}))
+@router.callback_query(F.data.in_({"lb_xp", "lb_money", "lb_marriages", "lb_rank"}))
 async def cb_leaderboard(call: CallbackQuery):
     await call.answer()
     await _send_leaderboard(call, call.data)
@@ -574,57 +1002,110 @@ async def cmd_rps(message: Message):
     wins = {"камень": "ножницы", "ножницы": "бумага", "бумага": "камень"}
     user_choice = args[1].lower()
     bot_choice = random.choice(choices)
+
+    # Статистика: игра сыграна
+    stat_increment(message.from_user.id, "total_games_played")
+
     if user_choice == bot_choice:
         result, extra = "🤝 Ничья!", "+5 XP, +5 🪙"
-        add_xp(message.from_user.id, 5); add_balance(message.from_user.id, 5)
+        xp = apply_xp_bonus(message.from_user.id, 5)
+        add_xp(message.from_user.id, xp); add_balance(message.from_user.id, 5)
     elif wins[user_choice] == bot_choice:
         result, extra = "🎉 Вы победили!", "+15 XP, +20 🪙"
-        add_xp(message.from_user.id, 15); add_balance(message.from_user.id, 20)
+        xp = apply_xp_bonus(message.from_user.id, 15)
+        add_xp(message.from_user.id, xp); add_balance(message.from_user.id, 20)
     else:
         result, extra = "😔 Бот победил!", ""
     await message.answer(
         f"Вы: {emojis[user_choice]} {user_choice}\nБот: {emojis[bot_choice]} {bot_choice}\n\n<b>{result}</b> {extra}",
         parse_mode="HTML",
     )
+    await check_achievements(message.from_user.id, message)
 
 @router.message(Command("slots"))
 async def cmd_slots(message: Message):
     ensure_user(message.from_user.id, message.from_user.username or message.from_user.full_name)
+    uid = message.from_user.id
     args = message.text.split()
+
+    # Бонус "День азарта": бесплатная ставка
+    free_bet = get_active_bonus(uid) == "free_slots"
+
     if len(args) < 2 or not args[1].isdigit():
-        await message.answer("🎰 Использование: /slots [сумма] (мин. 10)")
-        return
-    bet = int(args[1])
+        if free_bet:
+            # При активном бонусе можно играть без ставки
+            bet = 50  # дефолтная ставка при бесплатной игре
+        else:
+            await message.answer("🎰 Использование: /slots [сумма] (мин. 10)")
+            return
+    else:
+        bet = int(args[1])
+
     if bet < 10:
         await message.answer("❌ Минимальная ставка — 10 монет.")
         return
-    u = get_user(message.from_user.id)
-    if u["balance"] < bet:
-        await message.answer("❌ Недостаточно монет!")
-        return
 
-    # Проверяем бонус клевера (+10% удачи)
-    lucky = _has_item(message.from_user.id, 8)
+    u = get_user(uid)
+
+    if free_bet:
+        # Бесплатная ставка — деньги не снимаем, но только раз (отмечаем использование)
+        bet_text = f"(бесплатная ставка 🎲 {bet} 🪙)"
+        # Снимаем бонус чтобы не использовать повторно
+        conn = get_conn(); c = conn.cursor()
+        c.execute(
+            "UPDATE daily_bonus_log SET bonus_type='free_slots_used' WHERE user_id=? AND bonus_date=?",
+            (uid, get_today_str()),
+        )
+        conn.commit(); conn.close()
+    else:
+        if u["balance"] < bet:
+            await message.answer("❌ Недостаточно монет!")
+            return
+        bet_text = f"{bet} 🪙"
+
+    # Проверяем бонус клевера (+10% удачи) и день удачи (+20%)
+    lucky = _has_item(uid, 8)
+    day_lucky = get_active_bonus(uid) == "lucky_slots"
+
     symbols = ["🍒", "🍋", "🍊", "🍇", "⭐", "🔔"]
     s1, s2, s3 = random.choice(symbols), random.choice(symbols), random.choice(symbols)
-    add_balance(message.from_user.id, -bet)
+
+    if not free_bet:
+        add_balance(uid, -bet)
+
+    # Статистика: игра сыграна
+    stat_increment(uid, "total_games_played")
 
     win = False
     if s1 == s2 == s3:
         win = True
     elif lucky and random.random() < 0.10:
-        # +10% шанс превратить почти-победу в победу
+        s3 = s1
+        win = s1 == s2 == s3
+    elif day_lucky and random.random() < 0.20:
         s3 = s1
         win = s1 == s2 == s3
 
+    slots_streak = record_slots_result(uid, win)
+
     if win:
         prize = bet * 2
-        add_balance(message.from_user.id, prize)
-        add_xp(message.from_user.id, 15)
-        result = f"🎉 ДЖЕКПОТ! Выигрыш: <b>{prize}</b> монет! +15 XP"
+        add_balance(uid, prize)
+        xp = apply_xp_bonus(uid, 15)
+        add_xp(uid, xp)
+        result = f"🎉 ДЖЕКПОТ! Выигрыш: <b>{prize}</b> монет! +{xp} XP"
+        # Достижение #9: 3 победы подряд в слотах
+        if slots_streak >= 3 and not has_achievement(uid, 9):
+            if grant_achievement(uid, 9):
+                await message.answer(
+                    f"🏅 <b>Новое достижение!</b>\n🌟 <b>Любимчик фортуны</b>\n🎁 Награда: 500 монет",
+                    parse_mode="HTML",
+                )
     else:
         result = f"😔 Не повезло. Потеряно: <b>{bet}</b> монет."
-    await message.answer(f"🎰 | {s1} | {s2} | {s3} |\n\n{result}", parse_mode="HTML")
+
+    await message.answer(f"🎰 | {s1} | {s2} | {s3} |\n{bet_text}\n\n{result}", parse_mode="HTML")
+    await check_achievements(uid, message)
 
 @router.message(Command("duel"))
 async def cmd_duel(message: Message):
@@ -680,7 +1161,13 @@ async def cb_duel_accept(call: CallbackQuery):
     c_roll, t_roll = random.randint(1, 6), random.randint(1, 6)
     c_name = get_username_by_id(challenger_id)
     t_name = get_username_by_id(target_id)
+
+    # Статистика: игра сыграна для обоих
+    stat_increment(challenger_id, "total_games_played")
+    stat_increment(target_id, "total_games_played")
+
     if c_roll == t_roll:
+        # Серии не изменяются при ничьей
         await call.message.edit_text(
             f"🎲 {mention(c_name, challenger_id)}: {c_roll} vs {mention(t_name, target_id)}: {t_roll}\n🤝 Ничья\\! Монеты возвращены\\.",
             parse_mode="MarkdownV2", reply_markup=None,
@@ -692,14 +1179,30 @@ async def cb_duel_accept(call: CallbackQuery):
             winner_id, loser_id, winner_name = target_id, challenger_id, t_name
         add_balance(loser_id, -amount)
         add_balance(winner_id, amount)
-        add_xp(winner_id, 15)
+        xp_win = apply_xp_bonus(winner_id, 15)
+        add_xp(winner_id, xp_win)
+
+        # Статистика победителя
+        stat_increment(winner_id, "total_duels_won")
+
+        # Серии дуэлей
+        winner_streak = record_duel_result(winner_id, True)
+        record_duel_result(loser_id, False)
+
         await call.message.edit_text(
             f"⚔️ Дуэль завершена\\!\n"
             f"🎲 {mention(c_name, challenger_id)}: {c_roll}\n"
             f"🎲 {mention(t_name, target_id)}: {t_roll}\n\n"
-            f"🏆 Победил {mention(winner_name, winner_id)}\\! \\+{amount} монет, \\+15 XP",
+            f"🏆 Победил {mention(winner_name, winner_id)}\\! \\+{amount} монет, \\+{xp_win} XP",
             parse_mode="MarkdownV2", reply_markup=None,
         )
+        # Достижение #3: 10 побед подряд в дуэлях
+        if winner_streak >= 10 and not has_achievement(winner_id, 3):
+            if grant_achievement(winner_id, 3):
+                await call.message.answer(
+                    "🏅 <b>Новое достижение!</b>\n🍀 <b>Счастливчик</b> — 10 дуэлей подряд!\n🎁 Награда: 2000 монет",
+                    parse_mode="HTML",
+                )
     await call.answer()
 
 @router.callback_query(F.data.startswith("duel_decline_"))
@@ -715,7 +1218,6 @@ async def cb_duel_decline(call: CallbackQuery):
 @router.message(Command("quiz"))
 async def cmd_quiz(message: Message):
     ensure_user(message.from_user.id, message.from_user.username or message.from_user.full_name)
-    # Проверка лимита
     today_count = get_quiz_today(message.from_user.id)
     if today_count >= QUIZ_DAILY_LIMIT:
         await message.answer("🛑 Ты сегодня уже ответил(а) на 10 вопросов! Возвращайся завтра. 📅")
@@ -744,10 +1246,18 @@ async def cb_quiz(call: CallbackQuery):
         await call.answer("Это не ваша викторина!", show_alert=True)
         return
     increment_quiz_count(owner_id)
+    stat_increment(owner_id, "total_games_played")
     if chosen == correct:
+        # Бонус "День знаний": +30 XP
+        day_bonus = get_active_bonus(owner_id)
+        base_xp = 15
+        if day_bonus == "quiz_xp":
+            base_xp += 30
+        xp = apply_xp_bonus(owner_id, base_xp)
         add_balance(owner_id, 50)
-        add_xp(owner_id, 15)
-        await call.message.edit_text("✅ Правильно! +50 монет, +15 XP 🎉", reply_markup=None)
+        add_xp(owner_id, xp)
+        stat_increment(owner_id, "total_quiz_correct")
+        await call.message.edit_text(f"✅ Правильно! +50 монет, +{xp} XP 🎉", reply_markup=None)
     else:
         await call.message.edit_text("❌ Неверно! Попыток потрачено. Попробуй /quiz снова.", reply_markup=None)
     await call.answer()
@@ -773,13 +1283,25 @@ async def cmd_daily(message: Message):
         h, m = divmod(remaining // 60, 60)
         await message.answer(f"⏳ Следующий бонус через: <b>{h}ч {m}м</b>", parse_mode="HTML")
         return
+
+    # Базовые награды
+    coins = 100
+    # Бонус "День богатства": +200 монет
+    if get_active_bonus(message.from_user.id) == "daily_coins":
+        coins += 200
+
     conn = get_conn()
     c = conn.cursor()
-    c.execute("UPDATE users SET balance=balance+100, daily_ts=? WHERE user_id=?", (now, message.from_user.id))
+    c.execute("UPDATE users SET balance=balance+?, daily_ts=? WHERE user_id=?", (coins, now, message.from_user.id))
     conn.commit()
     conn.close()
-    add_xp(message.from_user.id, 10)
-    await message.answer("🎁 Ежедневный бонус: <b>+100 монет, +10 XP</b>!", parse_mode="HTML")
+    xp = apply_xp_bonus(message.from_user.id, 10)
+    add_xp(message.from_user.id, xp)
+    await message.answer(
+        f"🎁 Ежедневный бонус: <b>+{coins} монет, +{xp} XP</b>!",
+        parse_mode="HTML",
+    )
+    await check_achievements(message.from_user.id, message)
 
 @router.message(Command("give"))
 async def cmd_give(message: Message):
@@ -806,15 +1328,29 @@ async def cmd_give(message: Message):
     target_user = get_user(target_id)
     add_balance(message.from_user.id, -amount)
     add_balance(target_id, amount)
+
+    # Статистика: отданные монеты
+    stat_increment(message.from_user.id, "total_money_given", amount)
+
+    # Бонус "День подарков": +20 XP отправителю
+    day_bonus = get_active_bonus(message.from_user.id)
+    extra_xp_msg = ""
+    if day_bonus == "give_xp":
+        add_xp(message.from_user.id, 20)
+        extra_xp_msg = " (+20 XP вам 🎁)"
+
     await message.answer(
-        f"✅ Вы перевели <b>{amount} 🪙</b> пользователю {mention(target_user['username'] or str(target_id), target_id)}!",
+        f"✅ Вы перевели <b>{amount} 🪙</b> пользователю {mention(target_user['username'] or str(target_id), target_id)}!{extra_xp_msg}",
         parse_mode="HTML",
     )
+    await check_achievements(message.from_user.id, message)
 
 @router.message(Command("shop"))
 async def cmd_shop(message: Message):
     lines = ["🛒 <b>Магазин</b>\n"]
     for num, item in SHOP_ITEMS.items():
+        if num == 13:
+            continue  # Лисий хвост не в продаже
         lines.append(f"{num}. {item['name']} — <b>{item['price']} 🪙</b>\n   <i>{item['desc']}</i>")
     lines.append("\nКупить: /buy [номер]")
     await message.answer("\n".join(lines), parse_mode="HTML")
@@ -860,7 +1396,7 @@ async def cmd_buy(message: Message):
         await message.answer("🛒 Использование: /buy [номер]")
         return
     item_id = int(args[1])
-    if item_id not in SHOP_ITEMS:
+    if item_id not in SHOP_ITEMS or item_id == 13:
         await message.answer("❌ Нет такого предмета. Смотри /shop.")
         return
     item = SHOP_ITEMS[item_id]
@@ -872,13 +1408,11 @@ async def cmd_buy(message: Message):
     _add_to_inventory(message.from_user.id, item_id)
 
     bonus = ""
-    # Мгновенные бонусы при покупке
     if item_id == 4:
         add_xp(message.from_user.id, 10); bonus = " +10 XP!"
     elif item_id == 12:
         add_xp(message.from_user.id, 50); bonus = " +50 XP! Статус «👑 Властелин» активен."
     elif item_id == 11:
-        # Сохраняем время покупки яйца дракона
         conn = get_conn(); c = conn.cursor()
         c.execute(
             "INSERT INTO item_effects (user_id, dragon_egg, dragon_ts) VALUES (?, 1, ?) "
@@ -888,7 +1422,6 @@ async def cmd_buy(message: Message):
         conn.commit(); conn.close()
         bonus = " Яйцо вылупится через 7 дней!"
     elif item_id == 10:
-        # Активируем магическую шляпу
         conn = get_conn(); c = conn.cursor()
         c.execute(
             "INSERT INTO item_effects (user_id, magic_hat) VALUES (?, 1) "
@@ -899,6 +1432,7 @@ async def cmd_buy(message: Message):
         bonus = " Теперь используй /hat каждые 24ч!"
 
     await message.answer(f"✅ Куплено: {item['name']}!{bonus}", parse_mode="HTML")
+    await check_achievements(message.from_user.id, message)
 
 @router.message(Command("inventory"))
 async def cmd_inventory(message: Message):
@@ -929,7 +1463,6 @@ async def cmd_use(message: Message):
         return
     item_id = int(args[1])
 
-    # Сначала проверяем наличие, потом применяем эффект
     conn = get_conn()
     c = conn.cursor()
     c.execute("SELECT amount FROM inventory WHERE user_id=? AND item_id=?", (message.from_user.id, item_id))
@@ -940,12 +1473,10 @@ async def cmd_use(message: Message):
         await message.answer("❌ У вас нет такого предмета.")
         return
 
-    # Применяем эффект (до удаления, чтобы можно было реагировать на ошибки)
     response = await _apply_item_effect(message, item_id)
     if response is None:
-        return  # эффект требует reply и его нет
+        return
 
-    # Уменьшаем количество / удаляем предмет
     _remove_from_inventory(message.from_user.id, item_id)
     await message.answer(response, parse_mode="HTML")
 
@@ -981,7 +1512,6 @@ async def _apply_item_effect(message: Message, item_id: int) -> Optional[str]:
         add_xp(uid, 50)
         return "📜 Свиток опыта использован. +50 XP! ✨"
     elif item_id == 8:
-        # Активируем пассивный эффект клевера
         conn = get_conn(); c = conn.cursor()
         c.execute(
             "INSERT INTO item_effects (user_id, lucky_slots) VALUES (?, 1) "
@@ -996,7 +1526,6 @@ async def _apply_item_effect(message: Message, item_id: int) -> Optional[str]:
     elif item_id == 10:
         return "🎩 Магическая шляпа уже работает пассивно. Используй /hat для получения предмета."
     elif item_id == 11:
-        # Проверяем вылупление
         conn = get_conn(); c = conn.cursor()
         c.execute("SELECT dragon_ts FROM item_effects WHERE user_id=?", (uid,))
         row = c.fetchone()
@@ -1006,6 +1535,12 @@ async def _apply_item_effect(message: Message, item_id: int) -> Optional[str]:
             prize_id = random.choice(prizes)
             _add_to_inventory(uid, prize_id)
             prize_name = SHOP_ITEMS[prize_id]["name"]
+            # Проверяем достижение #5 (Властелин драконов)
+            if check_achievement_dragon(uid):
+                asyncio.create_task(message.answer(
+                    "🏅 <b>Новое достижение!</b>\n🐉 <b>Властелин драконов</b>!\n🎁 Награда: редкий предмет",
+                    parse_mode="HTML",
+                ))
             return f"🐉 Яйцо вылупилось! Дракончик принёс тебе: <b>{prize_name}</b>! 🎉"
         elif row:
             days_left = 7 - (int(time.time()) - row[0]) // 86400
@@ -1014,6 +1549,8 @@ async def _apply_item_effect(message: Message, item_id: int) -> Optional[str]:
             return "🥚 Нет активного яйца дракона."
     elif item_id == 12:
         return "👑 Корона уже надета! Ваш статус «Властелин» виден в /leaderboard."
+    elif item_id == 13:
+        return "🦊 Лисий хвост красиво развевается на ветру. Это редкий предмет!"
     return "❓ Неизвестный предмет."
 
 # Команда /hat — получить рандомный предмет от Магической шляпы
@@ -1034,7 +1571,7 @@ async def cmd_hat(message: Message):
         conn.close()
         await message.answer(f"🎩 Шляпа уже использована. Следующий предмет через {h}ч {m}м.")
         return
-    gift_id = random.choice(list(SHOP_ITEMS.keys())[:-3])  # не самые дорогие
+    gift_id = random.choice(list(SHOP_ITEMS.keys())[:-3])
     _add_to_inventory(message.from_user.id, gift_id)
     c.execute(
         "INSERT INTO item_effects (user_id, hat_last_ts) VALUES (?, ?) "
@@ -1297,63 +1834,493 @@ async def cmd_broadcast(message: Message):
         try:
             await bot.send_message(uid, f"📢 <b>Сообщение от администратора:</b>\n\n{text}", parse_mode="HTML")
             sent += 1
-            await asyncio.sleep(0.05)  # антиспам пауза
+            await asyncio.sleep(0.05)
         except Exception:
             failed += 1
     log_admin_action(message.from_user.id, "broadcast", 0, f"sent={sent}, failed={failed}")
     await message.answer(f"📢 Рассылка завершена. Отправлено: {sent}, ошибок: {failed}.")
 
+# ═══════════════════════════════════════════════════════════════════
+# ─────────────────── НОВЫЕ КОМАНДЫ v3 ─────────────────────────────
+# ═══════════════════════════════════════════════════════════════════
+
+# ─────────────────────────── /RANK ────────────────────────────────
+
+@router.message(Command("rank"))
+async def cmd_rank(message: Message):
+    ensure_user(message.from_user.id, message.from_user.username or message.from_user.full_name)
+    u = get_user(message.from_user.id)
+    level = calc_level(u["xp"])
+    rank_name, rank_emoji = get_rank(level)
+    next_rank = get_next_rank(level)
+
+    lines = [
+        f"🦊 <b>Фурри-ранг: {rank_emoji} {rank_name}</b>",
+        f"📊 Уровень: <b>{level}</b>",
+    ]
+    if next_rank:
+        next_lvl, next_name, next_emoji = next_rank
+        levels_needed = next_lvl - level
+        lines.append(f"⬆️ Следующий ранг: {next_emoji} <b>{next_name}</b>")
+        lines.append(f"🔺 До него: <b>{levels_needed}</b> уровней")
+    else:
+        lines.append("🌟 Вы достигли высшего ранга!")
+    await message.answer("\n".join(lines), parse_mode="HTML")
+
+# ──────────────────────── /ACHIEVEMENTS ───────────────────────────
+
+@router.message(Command("achievements"))
+async def cmd_achievements(message: Message):
+    ensure_user(message.from_user.id, message.from_user.username or message.from_user.full_name)
+    uid = message.from_user.id
+    stats = get_user_stats(uid)
+    u = get_user(uid)
+    level = calc_level(u["xp"])
+
+    lines = ["🏅 <b>Достижения</b>\n"]
+    for ach_id, ach in ACHIEVEMENTS.items():
+        earned = has_achievement(uid, ach_id)
+        status = "✅" if earned else "🔒"
+
+        # Прогресс для некоторых достижений
+        progress = ""
+        if not earned:
+            if ach_id == 1:
+                progress = f" ({stats['total_rp_actions']}/100)"
+            elif ach_id == 4:
+                progress = f" ({stats['total_quiz_correct']}/50)"
+            elif ach_id == 7:
+                progress = f" ({stats['total_money_given']}/5000)"
+            elif ach_id == 8:
+                progress = f" ({stats['total_games_played']}/100)"
+            elif ach_id == 10:
+                progress = f" ({stats['total_duels_won']}/25)"
+            elif ach_id == 12:
+                progress = f" ({level}/20)"
+
+        lines.append(f"{status} {ach['icon']} <b>{ach['name']}</b>{progress}\n   <i>{ach['desc']}</i>")
+
+    conn = get_conn(); c = conn.cursor()
+    c.execute("SELECT COUNT(*) FROM achievements WHERE user_id=?", (uid,))
+    total_earned = c.fetchone()[0]; conn.close()
+    lines.append(f"\n📊 Получено: <b>{total_earned}/{len(ACHIEVEMENTS)}</b>")
+    lines.append("ℹ️ Подробнее: /achievement [номер]")
+    await message.answer("\n".join(lines), parse_mode="HTML")
+
+@router.message(Command("achievement"))
+async def cmd_achievement_detail(message: Message):
+    ensure_user(message.from_user.id, message.from_user.username or message.from_user.full_name)
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2:
+        await message.answer("ℹ️ Использование: /achievement [номер от 1 до 12]")
+        return
+    # Поиск по номеру или названию
+    query = args[1].strip()
+    ach_id = None
+    if query.isdigit():
+        ach_id = int(query)
+    else:
+        for aid, ach in ACHIEVEMENTS.items():
+            if ach["name"].lower() == query.lower():
+                ach_id = aid
+                break
+    if not ach_id or ach_id not in ACHIEVEMENTS:
+        await message.answer("❌ Достижение не найдено. Введите номер от 1 до 12.")
+        return
+    ach = ACHIEVEMENTS[ach_id]
+    earned = has_achievement(message.from_user.id, ach_id)
+    conn = get_conn(); c = conn.cursor()
+    c.execute(
+        "SELECT earned_at FROM achievements WHERE user_id=? AND achievement_id=?",
+        (message.from_user.id, ach_id),
+    )
+    row = c.fetchone(); conn.close()
+    status = "✅ Получено" if earned else "🔒 Не получено"
+    date_str = ""
+    if row:
+        dt = datetime.fromtimestamp(row[0], tz=timezone.utc).strftime("%d.%m.%Y")
+        date_str = f"\n📅 Дата получения: {dt}"
+    await message.answer(
+        f"{ach['icon']} <b>{ach['name']}</b>\n"
+        f"Статус: {status}{date_str}\n\n"
+        f"📋 Условие: {ach['desc']}\n"
+        f"🎁 Награда: {ach['reward']}",
+        parse_mode="HTML",
+    )
+
+# ─────────────────────────── /STATS ───────────────────────────────
+
+@router.message(Command("stats"))
+async def cmd_stats(message: Message):
+    ensure_user(message.from_user.id, message.from_user.username or message.from_user.full_name)
+
+    # Определяем цель: себя или другого пользователя
+    args = message.text.split()
+    if len(args) > 1 and args[1].startswith("@"):
+        target_id = find_user_by_username(args[1])
+        if not target_id:
+            await message.answer("❌ Пользователь не найден.")
+            return
+        target_name = get_username_by_id(target_id)
+    else:
+        target_id = message.from_user.id
+        target_name = message.from_user.full_name
+
+    u = get_user(target_id)
+    if not u:
+        await message.answer("❌ Пользователь не найден.")
+        return
+
+    stats = get_user_stats(target_id)
+    level = calc_level(u["xp"])
+    rank_name, rank_emoji = get_rank(level)
+
+    # Дней в боте (с момента первого появления в БД — approximation by user_id order)
+    conn = get_conn(); c = conn.cursor()
+    c.execute("SELECT COUNT(*) FROM achievements WHERE user_id=?", (target_id,))
+    ach_count = c.fetchone()[0]
+    conn.close()
+
+    m = get_marriage(target_id)
+    marriage_info = "нет"
+    if m:
+        partner_id = m["user2_id"] if m["user1_id"] == target_id else m["user1_id"]
+        partner_name = get_username_by_id(partner_id)
+        days_married = (int(time.time()) - m["married_since"]) // 86400
+        marriage_info = f"{partner_name} ({days_married} дн.)"
+
+    await message.answer(
+        f"📊 <b>Статистика: {target_name}</b>\n\n"
+        f"🏆 Уровень: <b>{level}</b> ({u['xp']} XP)\n"
+        f"🦊 Ранг: {rank_emoji} <b>{rank_name}</b>\n"
+        f"💰 Баланс: <b>{u['balance']} 🪙</b>\n"
+        f"💍 Брак: {marriage_info}\n\n"
+        f"🎭 РП-действий: <b>{stats['total_rp_actions']}</b>\n"
+        f"🎲 Игр сыграно: <b>{stats['total_games_played']}</b>\n"
+        f"⚔️ Дуэлей выиграно: <b>{stats['total_duels_won']}</b>\n"
+        f"💸 Монет подарено: <b>{stats['total_money_given']}</b>\n"
+        f"❓ Правильных ответов в квизе: <b>{stats['total_quiz_correct']}</b>\n"
+        f"🏅 Достижений: <b>{ach_count}/{len(ACHIEVEMENTS)}</b>",
+        parse_mode="HTML",
+    )
+
+@router.message(Command("top_activity"))
+async def cmd_top_activity(message: Message):
+    """Топ пользователей по last_seen (last_daily_ts как приближение)."""
+    conn = get_conn(); c = conn.cursor()
+    # Используем daily_ts как last_seen, дополнительно XP как вторичный критерий
+    c.execute("SELECT username, xp, daily_ts FROM users ORDER BY daily_ts DESC LIMIT 10")
+    rows = c.fetchall()
+    conn.close()
+    if not rows:
+        await message.answer("📊 Статистика пуста.")
+        return
+    lines = ["📊 <b>Топ по активности (последний /daily):</b>\n"]
+    now = int(time.time())
+    for i, (name, xp, ts) in enumerate(rows, 1):
+        if ts > 0:
+            hours_ago = (now - ts) // 3600
+            when = f"{hours_ago}ч назад" if hours_ago < 24 else f"{hours_ago // 24}д назад"
+        else:
+            when = "давно"
+        lines.append(f"{i}. {name or '???'} — {when}")
+    await message.answer("\n".join(lines), parse_mode="HTML")
+
+@router.message(Command("top_rp_actions"))
+async def cmd_top_rp_actions(message: Message):
+    """Топ по количеству РП-действий."""
+    conn = get_conn(); c = conn.cursor()
+    c.execute(
+        "SELECT u.username, s.total_rp_actions "
+        "FROM user_stats s JOIN users u ON u.user_id=s.user_id "
+        "ORDER BY s.total_rp_actions DESC LIMIT 10"
+    )
+    rows = c.fetchall()
+    conn.close()
+    if not rows:
+        await message.answer("🎭 Статистика РП пуста.")
+        return
+    lines = ["🎭 <b>Топ по РП-действиям:</b>\n"]
+    for i, (name, cnt) in enumerate(rows, 1):
+        lines.append(f"{i}. {name or '???'} — {cnt} действий")
+    await message.answer("\n".join(lines), parse_mode="HTML")
+
+# ─────────────────── КАСТОМНЫЕ РП-КОМАНДЫ ─────────────────────────
+
+@router.message(Command("create_rp"))
+async def cmd_create_rp(message: Message):
+    ensure_user(message.from_user.id, message.from_user.username or message.from_user.full_name)
+    args = message.text.split(maxsplit=2)
+    if len(args) < 3:
+        await message.answer(
+            "✍️ Использование: /create_rp [слово] [текст ответа]\n\n"
+            "Слово: 2-20 символов, только русские буквы, без пробелов.\n"
+            "Пример: /create_rp мяукнуть {actor} мяукает на {target} 🐱"
+        )
+        return
+
+    keyword = args[1].strip().lower()
+    response_text = args[2].strip()
+
+    # Валидация ключевого слова
+    if not re.match(r'^[а-яёА-ЯЁ]{2,20}$', keyword):
+        await message.answer("❌ Слово должно содержать только русские буквы (2-20 символов), без пробелов.")
+        return
+
+    # Проверяем конфликт со встроенными командами
+    if keyword in RP_ALIAS:
+        await message.answer("❌ Это слово уже занято встроенной РП-командой.")
+        return
+
+    uid = message.from_user.id
+
+    # Лимит 10 команд на пользователя
+    conn = get_conn(); c = conn.cursor()
+    c.execute("SELECT COUNT(*) FROM custom_rp WHERE user_id=?", (uid,))
+    cnt = c.fetchone()[0]
+    conn.close()
+    if cnt >= 10:
+        await message.answer("❌ Достигнут лимит кастомных команд (10). Удалите старую: /delete_rp [слово]")
+        return
+
+    # Проверяем уникальность для пользователя
+    conn = get_conn(); c = conn.cursor()
+    c.execute("SELECT 1 FROM custom_rp WHERE user_id=? AND keyword=?", (uid, keyword))
+    exists = c.fetchone()
+    conn.close()
+    if exists:
+        await message.answer(f"❌ У вас уже есть команда «{keyword}». Удалите старую: /delete_rp {keyword}")
+        return
+
+    # Сохраняем
+    conn = get_conn(); c = conn.cursor()
+    c.execute(
+        "INSERT INTO custom_rp (user_id, keyword, response, created_at) VALUES (?, ?, ?, ?)",
+        (uid, keyword, response_text, int(time.time())),
+    )
+    conn.commit(); conn.close()
+
+    await message.answer(
+        f"✅ Кастомная РП-команда создана!\n"
+        f"Ключевое слово: <b>{keyword}</b>\n"
+        f"Используй: напиши <code>{keyword}</code> в ответ на сообщение пользователя.",
+        parse_mode="HTML",
+    )
+    await check_achievements(uid, message)
+
+@router.message(Command("my_rp"))
+async def cmd_my_rp(message: Message):
+    ensure_user(message.from_user.id, message.from_user.username or message.from_user.full_name)
+    conn = get_conn(); c = conn.cursor()
+    c.execute(
+        "SELECT keyword, response, uses_count FROM custom_rp WHERE user_id=? ORDER BY uses_count DESC",
+        (message.from_user.id,),
+    )
+    rows = c.fetchall(); conn.close()
+    if not rows:
+        await message.answer("🎭 У вас нет кастомных РП-команд.\nСоздать: /create_rp [слово] [текст]")
+        return
+    lines = [f"🎭 <b>Ваши кастомные РП-команды</b> ({len(rows)}/10):\n"]
+    for kw, resp, uses in rows:
+        short_resp = resp[:40] + "..." if len(resp) > 40 else resp
+        lines.append(f"• <b>{kw}</b> (используется: {uses})\n  <i>{short_resp}</i>")
+    lines.append("\nУдалить: /delete_rp [слово]")
+    await message.answer("\n".join(lines), parse_mode="HTML")
+
+@router.message(Command("delete_rp"))
+async def cmd_delete_rp(message: Message):
+    ensure_user(message.from_user.id, message.from_user.username or message.from_user.full_name)
+    args = message.text.split()
+    if len(args) < 2:
+        await message.answer("❌ Использование: /delete_rp [слово]")
+        return
+    keyword = args[1].strip().lower()
+    conn = get_conn(); c = conn.cursor()
+    c.execute("DELETE FROM custom_rp WHERE user_id=? AND keyword=?", (message.from_user.id, keyword))
+    deleted = c.rowcount
+    conn.commit(); conn.close()
+    if deleted:
+        await message.answer(f"✅ Команда «{keyword}» удалена.")
+    else:
+        await message.answer(f"❌ Команда «{keyword}» не найдена.")
+
+@router.message(Command("top_rp"))
+async def cmd_top_rp(message: Message):
+    """Топ кастомных РП-команд по uses_count."""
+    conn = get_conn(); c = conn.cursor()
+    c.execute(
+        "SELECT cr.keyword, u.username, cr.uses_count "
+        "FROM custom_rp cr JOIN users u ON u.user_id=cr.user_id "
+        "ORDER BY cr.uses_count DESC LIMIT 10"
+    )
+    rows = c.fetchall(); conn.close()
+    if not rows:
+        await message.answer("🎭 Кастомных команд ещё нет.")
+        return
+    lines = ["🎭 <b>Топ кастомных РП-команд:</b>\n"]
+    for i, (kw, name, uses) in enumerate(rows, 1):
+        lines.append(f"{i}. <b>{kw}</b> от {name or '???'} — {uses} раз")
+    await message.answer("\n".join(lines), parse_mode="HTML")
+
+# ─────────────────── БОНУС ДНЯ ────────────────────────────────────
+
+@router.message(Command("daily_bonus"))
+async def cmd_daily_bonus(message: Message):
+    ensure_user(message.from_user.id, message.from_user.username or message.from_user.full_name)
+    uid = message.from_user.id
+
+    existing = get_active_bonus(uid)
+    if existing:
+        display = get_bonus_display(existing)
+        await message.answer(
+            f"🎁 Ваш бонус дня уже активен:\n<b>{display}</b>\n\n"
+            f"Он действует до 23:59 UTC сегодня.",
+            parse_mode="HTML",
+        )
+        return
+
+    bonus_type = activate_bonus(uid)
+    if not bonus_type:
+        await message.answer("⚠️ Не удалось активировать бонус. Попробуйте позже.")
+        return
+
+    display = get_bonus_display(bonus_type)
+    await message.answer(
+        f"🎁 <b>Бонус дня активирован!</b>\n\n{display}\n\n"
+        f"Действует до 23:59 UTC. Удачи! ✨",
+        parse_mode="HTML",
+    )
+
+@router.message(Command("bonus_info"))
+async def cmd_bonus_info(message: Message):
+    ensure_user(message.from_user.id, message.from_user.username or message.from_user.full_name)
+    uid = message.from_user.id
+
+    active = get_active_bonus(uid)
+
+    # Рассчитываем время до следующего бонуса (до 00:00 UTC)
+    now_utc = datetime.now(timezone.utc)
+    midnight = now_utc.replace(hour=23, minute=59, second=59, microsecond=0)
+    seconds_left = int((midnight - now_utc).total_seconds())
+    h, remainder = divmod(seconds_left, 3600)
+    m, _ = divmod(remainder, 60)
+
+    if active:
+        display = get_bonus_display(active)
+        await message.answer(
+            f"🎁 <b>Текущий бонус:</b>\n{display}\n\n"
+            f"⏰ До конца дня: <b>{h}ч {m}м</b>\n\n"
+            f"Завтра у вас будет новый бонус!",
+            parse_mode="HTML",
+        )
+    else:
+        await message.answer(
+            f"🎁 У вас нет активного бонуса.\n\n"
+            f"Активировать: /daily_bonus\n"
+            f"⏰ До сброса: <b>{h}ч {m}м</b>",
+            parse_mode="HTML",
+        )
+
+# ═══════════════════════════════════════════════════════════════════
 # ─────────────────────────── РП-ХЭНДЛЕР ──────────────────────────
+# ═══════════════════════════════════════════════════════════════════
 
 @router.message(F.text)
 async def rp_handler(message: Message):
     if not message.text:
         return
-    m = RP_PATTERN.match(message.text.strip())
-    if not m:
+
+    uid = message.from_user.id
+    text = message.text.strip()
+
+    # ── Проверка встроенных РП-команд ──
+    m = RP_PATTERN.match(text)
+    if m:
+        if message.reply_to_message is None:
+            await message.reply("💬 Чтобы совершить действие, ответьте на сообщение нужного пользователя!")
+            return
+
+        keyword = m.group(1).lower()
+        canonical = RP_ALIAS.get(keyword)
+        if not canonical:
+            return
+
+        verb, emoji, phrases = RP_ACTIONS[canonical]
+        ensure_user(uid, message.from_user.username or message.from_user.full_name)
+        target = message.reply_to_message.from_user
+        ensure_user(target.id, target.username or target.full_name)
+
+        actor_name = message.from_user.full_name
+        actor_id   = uid
+        target_name = target.full_name
+        target_id   = target.id
+        phrase = random.choice(phrases)
+
+        partner_id = get_partner_id(actor_id)
+        is_spouse  = partner_id == target_id
+
+        if canonical in ("обнять", "обнял", "обнимаю") and is_spouse:
+            base_xp = 10
+            text_msg = (
+                f"❤️ {mention(actor_name, actor_id)} нежно обнимает своего\\(ю\\) супруг\\(у\\) "
+                f"{mention(target_name, target_id)} с особой теплотой\\! ❤️"
+            )
+            parse = "MarkdownV2"
+        else:
+            base_xp = 5
+            text_msg = (
+                f"{mention(actor_name, actor_id)} {verb} {mention(target_name, target_id)} "
+                f"{phrase} {emoji}"
+            )
+            parse = "Markdown"
+
+        # Бонус "День объятий": +10 XP за РП
+        day_bonus = get_active_bonus(actor_id)
+        if day_bonus == "rp_xp":
+            base_xp += 10
+
+        # Бонус "День защиты": защитить даёт +15 XP
+        if canonical == "защитить" and day_bonus == "protect_xp":
+            base_xp += 15
+
+        xp_gain = apply_xp_bonus(actor_id, base_xp)
+        add_xp(actor_id, xp_gain)
+
+        # Статистика: РП-действие
+        stat_increment(actor_id, "total_rp_actions")
+
+        await message.answer(text_msg, parse_mode=parse)
+        await check_achievements(actor_id, message)
         return
 
-    if message.reply_to_message is None:
-        await message.reply("💬 Чтобы совершить действие, ответьте на сообщение нужного пользователя!")
-        return
+    # ── Проверка кастомных РП-команд ──
+    ensure_user(uid, message.from_user.username or message.from_user.full_name)
+    result = check_custom_rp(uid, text)
+    if result:
+        keyword, response_text = result
+        if message.reply_to_message is None:
+            await message.reply("💬 Чтобы использовать кастомное действие, ответьте на сообщение пользователя!")
+            return
 
-    keyword = m.group(1).lower()
-    canonical = RP_ALIAS.get(keyword)
-    if not canonical:
-        return
+        target = message.reply_to_message.from_user
+        ensure_user(target.id, target.username or target.full_name)
 
-    verb, emoji, phrases = RP_ACTIONS[canonical]
-    ensure_user(message.from_user.id, message.from_user.username or message.from_user.full_name)
-    target = message.reply_to_message.from_user
-    ensure_user(target.id, target.username or target.full_name)
-
-    actor_name = message.from_user.full_name
-    actor_id   = message.from_user.id
-    target_name = target.full_name
-    target_id   = target.id
-    phrase = random.choice(phrases)
-
-    # Проверка на брак для "обнять"
-    partner_id = get_partner_id(actor_id)
-    is_spouse  = partner_id == target_id
-
-    if canonical in ("обнять", "обнял", "обнимаю") and is_spouse:
-        xp_gain = 10
-        text = (
-            f"❤️ {mention(actor_name, actor_id)} нежно обнимает своего\\(ю\\) супруг\\(у\\) "
-            f"{mention(target_name, target_id)} с особой теплотой\\! ❤️"
+        # Подстановка {actor} и {target} в тексте
+        actor_name = message.from_user.full_name
+        target_name = target.full_name
+        final_text = (
+            response_text
+            .replace("{actor}", actor_name)
+            .replace("{target}", target_name)
         )
-        parse = "MarkdownV2"
-    else:
-        xp_gain = 5
-        text = (
-            f"{mention(actor_name, actor_id)} {verb} {mention(target_name, target_id)} "
-            f"{phrase} {emoji}"
-        )
-        parse = "Markdown"
 
-    add_xp(actor_id, xp_gain)
-    await message.answer(text, parse_mode=parse)
+        # +5 XP за использование своей кастомной команды
+        xp = apply_xp_bonus(uid, 5)
+        add_xp(uid, xp)
+        stat_increment(uid, "total_rp_actions")
+
+        await message.answer(f"🎭 {final_text}", parse_mode="HTML")
+        await check_achievements(uid, message)
 
 # ──────────────────────────── ЗАПУСК ──────────────────────────────
 
@@ -1361,7 +2328,7 @@ async def main():
     init_db()
     if not ADMIN_IDS:
         logger.warning("⚠️  ADMIN_IDS не заданы! Добавь свой ID в .env: ADMIN_IDS=123456789")
-    logger.info("Бот запускается...")
+    logger.info("Бот v3.0 запускается...")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
