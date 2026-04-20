@@ -49,7 +49,7 @@ dp = Dispatcher()
 router = Router()
 dp.include_router(router)
 
-DB_FILE = "database.db"
+DB_FILE = "/app/data/database.db"
 
 # ─────────────────────────── БАЗА ДАННЫХ ──────────────────────────
 
