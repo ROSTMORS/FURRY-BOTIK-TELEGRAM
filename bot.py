@@ -2132,7 +2132,7 @@ async def admin_callback(call: CallbackQuery):
     await call.answer()
 
 
-@router.message(F.text)
+@router.message(F.text, ~F.text.startswith('/'))
 async def admin_input_handler(message: Message):
     """Обрабатывает ввод от админа в рамках админ-панели."""
     user_id = message.from_user.id
