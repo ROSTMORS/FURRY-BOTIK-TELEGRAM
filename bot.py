@@ -32,6 +32,8 @@ from aiogram.types import (
     Message,
 )
 from dotenv import load_dotenv
+import shutil
+from datetime import datetime
 
 # ─────────────────────────── НАСТРОЙКА ────────────────────────────
 load_dotenv()
@@ -160,16 +162,26 @@ def init_db():
             UNIQUE(user_id, keyword)
         );
 
-        -- Статистика пользователей
+               -- Статистика пользователей
         CREATE TABLE IF NOT EXISTS user_stats (
             user_id             INTEGER PRIMARY KEY,
             total_rp_actions    INTEGER DEFAULT 0,
             total_games_played  INTEGER DEFAULT 0,
             total_duels_won     INTEGER DEFAULT 0,
             total_money_given   INTEGER DEFAULT 0,
-            total_quiz_correct  INTEGER DEFAULT 0
+            total_quiz_correct  INTEGER DEFAULT 0,
+            first_seen          INTEGER DEFAULT 0,
+            last_seen           INTEGER DEFAULT 0
         );
-
+        
+        -- ELO рейтинг для дуэлей
+        CREATE TABLE IF NOT EXISTS elo_ratings (
+            user_id INTEGER PRIMARY KEY,
+            rating INTEGER DEFAULT 1000,
+            games_played INTEGER DEFAULT 0,
+            games_won INTEGER DEFAULT 0
+        );
+        
         -- Лог случайного бонуса дня
         CREATE TABLE IF NOT EXISTS daily_bonus_log (
             user_id    INTEGER,
@@ -645,10 +657,14 @@ def check_achievement_dragon(user_id: int) -> bool:
 # ─────────────────── СТАТИСТИКА ───────────────────────────────────
 
 def ensure_stats(user_id: int):
-    """Создать запись статистики если не существует."""
+    """Создать запись статистики если не существует, обновить last_seen."""
     conn = get_conn()
     c = conn.cursor()
-    c.execute("INSERT OR IGNORE INTO user_stats (user_id) VALUES (?)", (user_id,))
+    now = int(time.time())
+    # Если записи нет — создаём с first_seen = now
+    c.execute("INSERT OR IGNORE INTO user_stats (user_id, first_seen, last_seen) VALUES (?, ?, ?)", (user_id, now, now))
+    # Обновляем last_seen при каждом вызове
+    c.execute("UPDATE user_stats SET last_seen = ? WHERE user_id = ?", (now, user_id))
     conn.commit()
     conn.close()
 
@@ -679,6 +695,51 @@ def stat_increment(user_id: int, field: str, amount: int = 1):
     conn.commit()
     conn.close()
 
+# ─────────────────── ELO РЕЙТИНГ ───────────────────────────────────
+
+def get_elo(user_id: int) -> int:
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("SELECT rating FROM elo_ratings WHERE user_id=?", (user_id,))
+    row = c.fetchone()
+    conn.close()
+    return row[0] if row else 1000
+
+def update_elo(winner_id: int, loser_id: int, k_factor: int = 32):
+    winner_elo = get_elo(winner_id)
+    loser_elo = get_elo(loser_id)
+    
+    expected_winner = 1 / (1 + 10 ** ((loser_elo - winner_elo) / 400))
+    expected_loser = 1 / (1 + 10 ** ((winner_elo - loser_elo) / 400))
+    
+    new_winner_elo = winner_elo + k_factor * (1 - expected_winner)
+    new_loser_elo = loser_elo + k_factor * (0 - expected_loser)
+    
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("""
+        INSERT INTO elo_ratings (user_id, rating, games_played, games_won)
+        VALUES (?, ?, 1, 1) ON CONFLICT(user_id) DO UPDATE SET
+        rating = ?, games_played = games_played + 1, games_won = games_won + 1
+    """, (winner_id, round(new_winner_elo), round(new_winner_elo)))
+    c.execute("""
+        INSERT INTO elo_ratings (user_id, rating, games_played, games_won)
+        VALUES (?, ?, 1, 0) ON CONFLICT(user_id) DO UPDATE SET
+        rating = ?, games_played = games_played + 1
+    """, (loser_id, round(new_loser_elo), round(new_loser_elo)))
+    conn.commit()
+    conn.close()
+
+def get_elo_rank(user_id: int) -> str:
+    elo = get_elo(user_id)
+    if elo >= 1400: return "👑 Гроссмейстер"
+    if elo >= 1300: return "🏆 Мастер"
+    if elo >= 1200: return "⭐ Эксперт"
+    if elo >= 1100: return "🟢 Продвинутый"
+    if elo >= 1000: return "🔵 Средний"
+    if elo >= 900: return "🟡 Начинающий"
+    return "🔴 Новичок"
+    
 # ─────────────────── БОНУС ДНЯ ────────────────────────────────────
 
 # Бонусы: (ключ, название, вес)
@@ -820,7 +881,8 @@ async def cmd_start(message: Message):
         "📋 Полный список: /help"
     )
     await message.reply(text, parse_mode="MarkdownV2")
-
+    await check_achievements(message.from_user.id, message)
+    
 # ─────────────────────────── /HELP ────────────────────────────────
 
 @router.message(Command("help"))
@@ -837,7 +899,7 @@ async def cmd_help(message: Message):
         "<b>🏆 Уровни</b>\n"
         "/level — ваш уровень и XP\n"
         "/rank — фурри-ранг и прогресс\n"
-        "/leaderboard — топ-10 (по уровню / деньгам / бракам / рангу)\n\n"
+        "/leaderboard — топ-10 (по уровню / деньгам / бракам / рангу / ELO)\n\n"
         "<b>🎲 Игры</b>\n"
         "/dice — кубик 1-6\n"
         "/d20 — кубик 1-20\n"
@@ -862,8 +924,10 @@ async def cmd_help(message: Message):
         "<b>🏅 Достижения</b>\n"
         "/achievements — список достижений\n"
         "/achievement [номер] — подробнее о достижении\n\n"
-        "<b>📊 Статистика</b>\n"
-        "/stats [@user] — статистика пользователя\n"
+        "<b>📊 Статистика и профиль</b>\n"
+        "/profile [@user] — профиль пользователя\n"
+        "/elo — мой ELO рейтинг\n"
+        "/top_elo — топ по ELO рейтингу\n"
         "/top_activity — топ по активности\n"
         "/top_rp_actions — топ по РП-действиям\n\n"
         "<b>🎭 Кастомные РП</b>\n"
@@ -874,6 +938,9 @@ async def cmd_help(message: Message):
         "<b>🎁 Бонус дня</b>\n"
         "/daily_bonus — активировать бонус дня\n"
         "/bonus_info — информация о бонусе\n"
+        "<b>🛠️ Админ-команды</b>\n"
+        "/admin_panel — админ-панель\n"
+        "/chats — статистика бота\n"
     )
     await message.reply(text, parse_mode="HTML")
 
@@ -898,12 +965,17 @@ async def cmd_level(message: Message):
 # ─────────────────────────── /LEADERBOARD ─────────────────────────
 
 def make_leaderboard_kb():
-    return InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="🏆 По уровню",  callback_data="lb_xp"),
-        InlineKeyboardButton(text="💰 По деньгам", callback_data="lb_money"),
-        InlineKeyboardButton(text="💍 По бракам",  callback_data="lb_marriages"),
-        InlineKeyboardButton(text="🦊 По рангу",   callback_data="lb_rank"),
-    ]])
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="🏆 По уровню", callback_data="lb_xp"),
+            InlineKeyboardButton(text="💰 По деньгам", callback_data="lb_money"),
+        ],
+        [
+            InlineKeyboardButton(text="💍 По бракам", callback_data="lb_marriages"),
+            InlineKeyboardButton(text="🦊 По рангу", callback_data="lb_rank"),
+            InlineKeyboardButton(text="⚔️ По ELO", callback_data="lb_elo"),
+        ]
+    ])
 
 @router.message(Command("leaderboard"))
 async def cmd_leaderboard(message: Message):
@@ -939,6 +1011,19 @@ async def _send_leaderboard(target, mode: str):
             display_name = name or str(uid)
             mention = f"<a href='tg://user?id={uid}'>{display_name}</a>"
             lines.append(f"{i}. {mention} — {rank_emoji} {rank_name} (Ур.{lvl})")
+    elif mode == "lb_elo":
+        c.execute("""
+            SELECT u.user_id, u.username, e.rating 
+            FROM elo_ratings e 
+            JOIN users u ON u.user_id = e.user_id 
+            ORDER BY e.rating DESC LIMIT 10
+        """)
+        rows = c.fetchall()
+        lines = ["⚔️ <b>Топ по ELO рейтингу:</b>"]
+        for i, (uid, name, rating) in enumerate(rows, 1):
+            display_name = name or str(uid)
+            mention = f"<a href='tg://user?id={uid}'>{display_name}</a>"
+            lines.append(f"{i}. {mention} — <b>{rating}</b> ({get_elo_rank(uid)})")
     else:  # lb_marriages
         c.execute(
             "SELECT u1.user_id, u1.username, u2.user_id, u2.username, m.married_since "
@@ -970,7 +1055,7 @@ def _has_item(user_id: int, item_id: int) -> bool:
     conn.close()
     return bool(row)
 
-@router.callback_query(F.data.in_({"lb_xp", "lb_money", "lb_marriages", "lb_rank"}))
+@router.callback_query(F.data.in_({"lb_xp", "lb_money", "lb_marriages", "lb_rank", "lb_elo"}))
 async def cb_leaderboard(call: CallbackQuery):
     await call.answer()
     await _send_leaderboard(call, call.data)
@@ -1186,6 +1271,9 @@ async def cb_duel_accept(call: CallbackQuery):
         add_balance(winner_id, amount)
         xp_win = apply_xp_bonus(winner_id, 15)
         add_xp(winner_id, xp_win)
+        
+                # Обновляем ELO рейтинг
+        update_elo(winner_id, loser_id)
 
         # Статистика победителя
         stat_increment(winner_id, "total_duels_won")
@@ -1344,8 +1432,12 @@ async def cmd_give(message: Message):
         add_xp(message.from_user.id, 20)
         extra_xp_msg = " (+20 XP вам 🎁)"
 
+    # Создаём кликабельное упоминание получателя
+    target_name = target_user['username'] or str(target_id)
+    target_mention = f"<a href='tg://user?id={target_id}'>{target_name}</a>"
+
     await message.reply(
-        f"✅ Вы перевели <b>{amount} 🪙</b> пользователю {mention(target_user['username'] or str(target_id), target_id)}!{extra_xp_msg}",
+        f"✅ Вы перевели <b>{amount} 🪙</b> пользователю {target_mention}!{extra_xp_msg}",
         parse_mode="HTML",
     )
     await check_achievements(message.from_user.id, message)
@@ -1651,6 +1743,10 @@ async def cb_marry_yes(call: CallbackQuery):
     )
     await call.answer()
 
+    # Проверка достижения "Семьянин"
+    await check_achievements(proposer_id, call.message)
+    await check_achievements(target_id, call.message)
+
 @router.callback_query(F.data.startswith("marry_no_"))
 async def cb_marry_no(call: CallbackQuery):
     proposer_id = int(call.data.split("_")[2])
@@ -1844,6 +1940,120 @@ async def cmd_broadcast(message: Message):
             failed += 1
     log_admin_action(message.from_user.id, "broadcast", 0, f"sent={sent}, failed={failed}")
     await message.reply(f"📢 Рассылка завершена. Отправлено: {sent}, ошибок: {failed}.")
+
+# ─────────────────────────── АДМИН-ПАНЕЛЬ ─────────────────────────
+
+def admin_panel_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="📊 Статистика бота", callback_data="admin_stats"),
+            InlineKeyboardButton(text="👥 Список пользователей", callback_data="admin_users"),
+        ],
+        [
+            InlineKeyboardButton(text="💰 Выдать монеты", callback_data="admin_give_money"),
+            InlineKeyboardButton(text="🏅 Выдать достижение", callback_data="admin_give_ach"),
+        ],
+        [
+            InlineKeyboardButton(text="📦 Выдать предмет", callback_data="admin_give_item"),
+            InlineKeyboardButton(text="💾 Создать бэкап", callback_data="admin_backup"),
+        ],
+        [
+            InlineKeyboardButton(text="📨 Рассылка", callback_data="admin_broadcast"),
+        ],
+    ])
+
+@router.message(Command("admin_panel"))
+@admin_only
+async def cmd_admin_panel(message: Message):
+    await message.reply("🛠️ <b>АДМИН-ПАНЕЛЬ</b>\n\nВыбери действие:", parse_mode="HTML", reply_markup=admin_panel_kb())
+
+
+@router.callback_query(F.data.startswith("admin_"))
+async def admin_callback(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("🚫 Нет доступа!", show_alert=True)
+        return
+    
+    action = call.data.split("_")[1]
+    
+    if action == "stats":
+        conn = get_conn()
+        c = conn.cursor()
+        c.execute("SELECT COUNT(*) FROM users")
+        users = c.fetchone()[0]
+        c.execute("SELECT COUNT(*) FROM marriages")
+        marriages = c.fetchone()[0]
+        c.execute("SELECT COUNT(*) FROM custom_rp")
+        custom_rp = c.fetchone()[0]
+        c.execute("SELECT COUNT(*) FROM achievements")
+        achievements = c.fetchone()[0]
+        c.execute("SELECT COUNT(*) FROM elo_ratings WHERE games_played > 0")
+        duelists = c.fetchone()[0]
+        conn.close()
+        
+        await call.message.edit_text(
+            f"📊 <b>СТАТИСТИКА БОТА</b>\n\n"
+            f"👥 Пользователей: <b>{users}</b>\n"
+            f"💍 Браков: <b>{marriages}</b>\n"
+            f"🎭 Кастомных РП: <b>{custom_rp}</b>\n"
+            f"🏅 Достижений выдано: <b>{achievements}</b>\n"
+            f"⚔️ Участников дуэлей: <b>{duelists}</b>",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="admin_back")]])
+        )
+    
+    elif action == "users":
+        conn = get_conn()
+        c = conn.cursor()
+        c.execute("SELECT user_id, username, xp, level, balance FROM users ORDER BY xp DESC LIMIT 20")
+        rows = c.fetchall()
+        conn.close()
+        
+        text = "👥 <b>ТОП-20 ПОЛЬЗОВАТЕЛЕЙ (по XP)</b>\n\n"
+        for i, (uid, name, xp, lvl, bal) in enumerate(rows, 1):
+            display = name or str(uid)
+            text += f"{i}. {display} — ур.{lvl} ({xp} XP) | {bal}🪙\n"
+        
+        await call.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="admin_back")]]))
+    
+    elif action == "back":
+        await call.message.edit_text("🛠️ <b>АДМИН-ПАНЕЛЬ</b>\n\nВыбери действие:", parse_mode="HTML", reply_markup=admin_panel_kb())
+    
+    elif action == "backup":
+        await call.message.edit_text("💾 Создаю бэкап...")
+        if backup_database():
+            await call.message.edit_text("✅ Бэкап успешно создан!", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="admin_back")]]))
+        else:
+            await call.message.edit_text("❌ Ошибка при создании бэкапа!", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="admin_back")]]))
+    
+    elif action == "give":
+        # Запрос username
+        await call.message.edit_text("💰 Введите @username пользователя:", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Отмена", callback_data="admin_cancel")]]))
+        # Сохраняем состояние в памяти (упрощённо — в следующем сообщении)
+    
+    elif action == "give_money":
+        await call.message.edit_text("💰 Введите @username и сумму через пробел\nПример: @user 100", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Отмена", callback_data="admin_back")]]))
+    
+    elif action == "broadcast":
+        await call.message.edit_text("📨 Введите сообщение для рассылки:", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Отмена", callback_data="admin_back")]]))
+    
+    await call.answer()
+
+
+@router.callback_query(F.data == "admin_cancel")
+async def admin_cancel(call: CallbackQuery):
+    await call.message.edit_text("🛠️ <b>АДМИН-ПАНЕЛЬ</b>\n\nВыбери действие:", parse_mode="HTML", reply_markup=admin_panel_kb())
+    await call.answer()
+
+@router.message(Command("backup"))
+@admin_only
+async def cmd_backup(message: Message):
+    """Создать бэкап базы данных (только для админа)"""
+    await message.reply("💾 Создаю бэкап базы данных...")
+    if backup_database():
+        await message.reply("✅ Бэкап успешно создан!")
+    else:
+        await message.reply("❌ Ошибка при создании бэкапа. Проверь логи.")
 
 # ═══════════════════════════════════════════════════════════════════
 # ─────────────────── НОВЫЕ КОМАНДЫ v3 ─────────────────────────────
@@ -2226,6 +2436,212 @@ async def cmd_bonus_info(message: Message):
             parse_mode="HTML",
         )
 
+# ─────────────────────────── /ELO ────────────────────────────────
+# Команда показывает твой личный ELO рейтинг для дуэлей
+# ELO — система рейтинга: побеждаешь сильных → много очков, проигрываешь слабым → теряешь много
+
+@router.message(Command("elo"))
+async def cmd_elo(message: Message):
+    ensure_user(message.from_user.id, message.from_user.username or message.from_user.full_name)
+    uid = message.from_user.id
+    
+    # Получаем текущий рейтинг пользователя (по умолчанию 1000)
+    elo = get_elo(uid)
+    
+    # Получаем текстовый ранг (Новичок, Средний, Эксперт, Мастер и т.д.)
+    rank = get_elo_rank(uid)
+    
+    # Получаем статистику игр из базы данных
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("SELECT games_played, games_won FROM elo_ratings WHERE user_id=?", (uid,))
+    row = c.fetchone()
+    conn.close()
+    
+    games = row[0] if row else 0      # Сколько всего дуэлей сыграл
+    wins = row[1] if row else 0       # Сколько дуэлей выиграл
+    
+    # Считаем процент побед (если игр не было — 0%)
+    winrate = (wins / games * 100) if games > 0 else 0
+    
+    # Отправляем красивое сообщение с рейтингом
+    await message.reply(
+        f"⚔️ <b>ELO РЕЙТИНГ</b>\n\n"
+        f"📊 Рейтинг: <b>{elo}</b>\n"
+        f"{rank}\n\n"
+        f"🎮 Всего игр: <b>{games}</b>\n"
+        f"🏆 Побед: <b>{wins}</b>\n"
+        f"📈 Процент побед: <b>{winrate:.1f}%</b>",
+        parse_mode="HTML"
+    )
+
+# ─────────────────────────── /PROFILE ─────────────────────────────
+# Команда показывает красивую карточку пользователя с полной статистикой
+# Использование: /profile — свой профиль, /profile @username — профиль другого
+# В профиле есть: уровень, ранг, баланс, XP, ELO, брак, достижения, кастомные команды
+
+@router.message(Command("profile"))
+async def cmd_profile(message: Message):
+    ensure_user(message.from_user.id, message.from_user.username or message.from_user.full_name)
+    
+    # Определяем цель: себя или другого пользователя (если указан @username)
+    args = message.text.split()
+    if len(args) > 1 and args[1].startswith("@"):
+        target_id = find_user_by_username(args[1])
+        if not target_id:
+            await message.reply("❌ Пользователь не найден.")
+            return
+    else:
+        target_id = message.from_user.id
+    
+    # Получаем данные пользователя из БД
+    u = get_user(target_id)
+    if not u:
+        await message.reply("❌ Пользователь не найден.")
+        return
+    
+    # Получаем статистику, уровень, ранг, ELO
+    stats = get_user_stats(target_id)
+    level = calc_level(u["xp"])
+    rank_name, rank_emoji = get_rank(level)
+    elo = get_elo(target_id)
+    elo_rank = get_elo_rank(target_id)
+    
+    # Считаем количество полученных достижений
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("SELECT COUNT(*) FROM achievements WHERE user_id=?", (target_id,))
+    ach_count = c.fetchone()[0]
+    conn.close()
+    
+    # Получаем информацию о браке (если есть)
+    m = get_marriage(target_id)
+    if m:
+        partner_id = m["user2_id"] if m["user1_id"] == target_id else m["user1_id"]
+        partner_name = get_username_by_id(partner_id)
+        partner_mention = f"<a href='tg://user?id={partner_id}'>{partner_name}</a>"
+        days_married = (int(time.time()) - m["married_since"]) // 86400
+        marriage_info = f"💍 {partner_mention} ({days_married} дн.)"
+    else:
+        marriage_info = "💔 нет"
+    
+    # Создаём кликабельное имя пользователя
+    user_name = u["username"] or str(target_id)
+    user_mention = f"<a href='tg://user?id={target_id}'>{user_name}</a>"
+    
+    # Красивая карточка с рамкой
+    profile_text = f"""
+╔════════════════════════════════════════╗
+║        🦊 <b>ПРОФИЛЬ ПОЛЬЗОВАТЕЛЯ</b> 🦊       ║
+╠════════════════════════════════════════╣
+║                                        ║
+║    🌟 {user_mention}
+║                                        ║
+║    🏆 Уровень: <b>{level}</b>
+║    {rank_emoji} Ранг: <b>{rank_name}</b>
+║    💰 Баланс: <b>{u['balance']} 🪙</b>
+║    ✨ Опыт: <b>{u['xp']} XP</b>
+║    ⚔️ ELO: <b>{elo}</b> ({elo_rank})
+║    💍 Брак: {marriage_info}
+║                                        ║
+╠════════════════════════════════════════╣
+║        📊 <b>СТАТИСТИКА</b>                 ║
+╠════════════════════════════════════════╣
+║                                        ║
+║    🎭 РП-действий: <b>{stats['total_rp_actions']}</b>
+║    🎲 Игр сыграно: <b>{stats['total_games_played']}</b>
+║    ⚔️ Дуэлей выиграно: <b>{stats['total_duels_won']}</b>
+║    💸 Монет подарено: <b>{stats['total_money_given']}</b>
+║    ❓ Правильных ответов: <b>{stats['total_quiz_correct']}</b>
+║    🏅 Достижений: <b>{ach_count}/12</b>
+║                                        ║
+╚════════════════════════════════════════╝
+"""
+    
+    # Кнопки для просмотра достижений и кастомных команд
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="🏅 Достижения", callback_data=f"profile_achievements_{target_id}"),
+            InlineKeyboardButton(text="🎭 Мои команды", callback_data=f"profile_commands_{target_id}"),
+        ]
+    ])
+    
+    await message.reply(profile_text, parse_mode="HTML", reply_markup=kb)
+
+
+# ─────────────────── ПРОФИЛЬ: ДОСТИЖЕНИЯ ─────────────────────────
+# Обработчик кнопки "Достижения" в профиле
+# Показывает список всех 12 достижений и статус (получено/нет)
+
+@router.callback_query(F.data.startswith("profile_achievements_"))
+async def profile_achievements(call: CallbackQuery):
+    target_id = int(call.data.split("_")[2])
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("SELECT achievement_id FROM achievements WHERE user_id=?", (target_id,))
+    earned = [row[0] for row in c.fetchall()]
+    conn.close()
+    
+    text = "🏅 <b>ДОСТИЖЕНИЯ</b>\n\n"
+    for ach_id, ach in ACHIEVEMENTS.items():
+        status = "✅" if ach_id in earned else "🔒"
+        text += f"{status} {ach['icon']} <b>{ach['name']}</b>\n   <i>{ach['desc']}</i>\n\n"
+    
+    await call.message.edit_text(text, parse_mode="HTML")
+
+
+# ─────────────────── ПРОФИЛЬ: КАСТОМНЫЕ КОМАНДЫ ──────────────────
+# Обработчик кнопки "Мои команды" в профиле
+# Показывает список кастомных РП-команд пользователя
+
+@router.callback_query(F.data.startswith("profile_commands_"))
+async def profile_commands(call: CallbackQuery):
+    target_id = int(call.data.split("_")[2])
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("SELECT keyword, uses_count FROM custom_rp WHERE user_id=? ORDER BY uses_count DESC", (target_id,))
+    rows = c.fetchall()
+    conn.close()
+    
+    if not rows:
+        text = "🎭 <b>КАСТОМНЫЕ КОМАНДЫ</b>\n\nУ пользователя нет кастомных РП-команд."
+    else:
+        text = "🎭 <b>КАСТОМНЫЕ КОМАНДЫ</b>\n\n"
+        for kw, uses in rows:
+            text += f"• <b>{kw}</b> (использований: {uses})\n"
+    
+    await call.message.edit_text(text, parse_mode="HTML")
+
+# ─────────────────────────── /TOP_ELO ─────────────────────────────
+# Команда показывает топ-10 игроков по ELO рейтингу
+
+@router.message(Command("top_elo"))
+async def cmd_top_elo(message: Message):
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("""
+        SELECT u.user_id, u.username, e.rating 
+        FROM elo_ratings e 
+        JOIN users u ON u.user_id = e.user_id 
+        ORDER BY e.rating DESC LIMIT 10
+    """)
+    rows = c.fetchall()
+    conn.close()
+    
+    if not rows:
+        await message.reply("⚔️ Нет данных для топа ELO. Сыграйте в дуэль!")
+        return
+    
+    lines = ["⚔️ <b>ТОП ПО ELO РЕЙТИНГУ</b>\n"]
+    for i, (uid, name, rating) in enumerate(rows, 1):
+        display_name = name or str(uid)
+        mention = f"<a href='tg://user?id={uid}'>{display_name}</a>"
+        # Определяем значок для топ-3
+        medal = ["🥇", "🥈", "🥉"][i-1] if i <= 3 else f"{i}."
+        lines.append(f"{medal} {mention} — <b>{rating}</b> ({get_elo_rank(uid)})")
+    
+    await message.reply("\n".join(lines), parse_mode="HTML")
+
 # ═══════════════════════════════════════════════════════════════════
 # ─────────────────────────── РП-ХЭНДЛЕР ──────────────────────────
 # ═══════════════════════════════════════════════════════════════════
@@ -2337,12 +2753,47 @@ async def rp_handler(message: Message):
         await message.reply(f"🎭 {final_text}", parse_mode="HTML")
         await check_achievements(uid, message)
 
+# ─────────────────── БЭКАПЫ БД ───────────────────────────────────
+
+def backup_database():
+    """Создаёт бэкап базы данных в папку /app/data/backups"""
+    try:
+        backup_dir = "/app/data/backups"
+        if not os.path.exists(backup_dir):
+            os.makedirs(backup_dir)
+        
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_file = os.path.join(backup_dir, f"database_backup_{timestamp}.db")
+        
+        shutil.copy2(DB_FILE, backup_file)
+        
+        # Удаляем старые бэкапы (оставляем только 7 последних)
+        backups = sorted([f for f in os.listdir(backup_dir) if f.startswith("database_backup_")])
+        for old_backup in backups[:-7]:
+            os.remove(os.path.join(backup_dir, old_backup))
+        
+        logger.info(f"Бэкап создан: {backup_file}")
+        return True
+    except Exception as e:
+        logger.error(f"Ошибка бэкапа: {e}")
+        return False
+
+async def scheduled_backup():
+    """Запускает бэкап каждые 24 часа"""
+    while True:
+        await asyncio.sleep(86400)  # 24 часа
+        backup_database()
+
 # ──────────────────────────── ЗАПУСК ──────────────────────────────
 
 async def main():
     init_db()
     if not ADMIN_IDS:
         logger.warning("⚠️  ADMIN_IDS не заданы! Добавь свой ID в .env: ADMIN_IDS=123456789")
+    
+    # Запускаем фоновый бэкап
+    asyncio.create_task(scheduled_backup())
+    
     logger.info("Бот v3.0 запускается...")
     await dp.start_polling(bot)
 
