@@ -1998,16 +1998,22 @@ def admin_panel_kb():
 async def cmd_admin_panel(message: Message):
     await message.reply("🛠️ <b>АДМИН-ПАНЕЛЬ</b>\n\nВыбери действие:", parse_mode="HTML", reply_markup=admin_panel_kb())
 
+
 @router.callback_query(F.data == "admin_cancel")
 async def admin_cancel(call: CallbackQuery):
-    # Очищаем состояние админа
+    print(f"DEBUG: admin_cancel вызван для {call.from_user.id}")  # можно удалить после проверки
     if call.from_user.id in admin_actions:
         del admin_actions[call.from_user.id]
     await call.message.edit_text("🛠️ <b>АДМИН-ПАНЕЛЬ</b>\n\nВыбери действие:", parse_mode="HTML", reply_markup=admin_panel_kb())
     await call.answer()
-    
+
+
 @router.callback_query(F.data.startswith("admin_"))
 async def admin_callback(call: CallbackQuery):
+    # Пропускаем admin_cancel, чтобы его обработал отдельный хендлер
+    if call.data == "admin_cancel":
+        return
+
     if not is_admin(call.from_user.id):
         await call.answer("🚫 Нет доступа!", show_alert=True)
         return
@@ -2044,7 +2050,6 @@ async def admin_callback(call: CallbackQuery):
         return
 
     # ── Остальные действия: action = часть после "admin_" ──
-    # Для "admin_give_ach" → action = "give_ach"; для "admin_stats" → action = "stats"
     action = "_".join(parts[1:])  # всё после "admin_"
 
     if action == "stats":
@@ -2126,13 +2131,16 @@ async def admin_callback(call: CallbackQuery):
         )
     await call.answer()
 
+
 @router.message(F.text)
 async def admin_input_handler(message: Message):
-    # Добавим отладочный вывод (можно убрать после проверки)
-    print(f"DEBUG: admin_input_handler вызван для {message.from_user.id}, текст: {message.text}")
     """Обрабатывает ввод от админа в рамках админ-панели."""
     user_id = message.from_user.id
     if not is_admin(user_id):
+        return
+
+    # Игнорируем команды (начинаются с /)
+    if message.text.startswith('/'):
         return
 
     if user_id not in admin_actions:
@@ -2141,6 +2149,7 @@ async def admin_input_handler(message: Message):
     action_data = admin_actions[user_id]
     action = action_data["action"]
     step = action_data.get("step", 1)
+    print(f"DEBUG: admin_input_handler: action={action}, step={step}, text={message.text}")
 
     if action == "give_money" and step == 1:
         parts = message.text.split()
@@ -2156,6 +2165,7 @@ async def admin_input_handler(message: Message):
         log_admin_action(user_id, "add_money", target_id, str(amount))
         await message.reply(f"✅ Выдано {amount} монет пользователю {parts[0]}")
         del admin_actions[user_id]
+        await message.answer("🛠️ <b>АДМИН-ПАНЕЛЬ</b>\n\nВыбери действие:", parse_mode="HTML", reply_markup=admin_panel_kb())
 
     elif action == "give_ach" and step == 1:
         username = message.text.strip()
@@ -2174,6 +2184,7 @@ async def admin_input_handler(message: Message):
         else:
             await message.reply(f"⚠️ У пользователя {username} уже есть это достижение.")
         del admin_actions[user_id]
+        await message.answer("🛠️ <b>АДМИН-ПАНЕЛЬ</b>\n\nВыбери действие:", parse_mode="HTML", reply_markup=admin_panel_kb())
 
     elif action == "give_item" and step == 1:
         username = message.text.strip()
@@ -2189,6 +2200,7 @@ async def admin_input_handler(message: Message):
         log_admin_action(user_id, "give_item", target_id, f"item_{item_id}")
         await message.reply(f"✅ Выдан предмет «{SHOP_ITEMS[item_id]['name']}» пользователю {username}")
         del admin_actions[user_id]
+        await message.answer("🛠️ <b>АДМИН-ПАНЕЛЬ</b>\n\nВыбери действие:", parse_mode="HTML", reply_markup=admin_panel_kb())
 
     elif action == "broadcast" and step == 1:
         text = message.text
@@ -2208,6 +2220,7 @@ async def admin_input_handler(message: Message):
                 pass
         await message.reply(f"📢 Рассылка завершена. Отправлено: {sent} пользователям.")
         del admin_actions[user_id]
+        await message.answer("🛠️ <b>АДМИН-ПАНЕЛЬ</b>\n\nВыбери действие:", parse_mode="HTML", reply_markup=admin_panel_kb())
 
 
 @router.message(Command("backup"))
