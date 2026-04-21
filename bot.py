@@ -18,6 +18,7 @@ import math
 import os
 import random
 import re
+import shutil
 import sqlite3
 import time
 from datetime import datetime, timezone
@@ -32,7 +33,6 @@ from aiogram.types import (
     Message,
 )
 from dotenv import load_dotenv
-import shutil
 
 # ─────────────────────────── НАСТРОЙКА ────────────────────────────
 load_dotenv()
@@ -544,7 +544,6 @@ def grant_achievement(user_id: int, ach_id: int) -> bool:
         conn.close()
 
     # Выдать награду
-    ach = ACHIEVEMENTS[ach_id]
     if ach_id == 1:
         add_balance(user_id, 500)
     elif ach_id == 2:
@@ -1044,7 +1043,7 @@ async def _send_leaderboard(target, mode: str):
     if isinstance(target, CallbackQuery):
         await target.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
     else:
-        await target.answer(text, parse_mode="HTML", reply_markup=kb)
+        await target.reply(text, parse_mode="HTML", reply_markup=kb)
 
 def _has_item(user_id: int, item_id: int) -> bool:
     conn = get_conn()
@@ -1306,7 +1305,7 @@ async def cb_duel_accept(call: CallbackQuery):
         # Достижение #3: 10 побед подряд в дуэлях
         if winner_streak >= 10 and not has_achievement(winner_id, 3):
             if grant_achievement(winner_id, 3):
-                await call.message.answer(
+                await call.message.reply(
                     "🏅 <b>Новое достижение!</b>\n🍀 <b>Счастливчик</b> — 10 дуэлей подряд!\n🎁 Награда: 2000 монет",
                     parse_mode="HTML",
                 )
@@ -1655,7 +1654,7 @@ async def _apply_item_effect(message: Message, item_id: int) -> Optional[str]:
             prize_name = SHOP_ITEMS[prize_id]["name"]
             # Проверяем достижение #5 (Властелин драконов)
             if check_achievement_dragon(uid):
-                asyncio.create_task(message.answer(
+                asyncio.create_task(message.reply(
                     "🏅 <b>Новое достижение!</b>\n🐉 <b>Властелин драконов</b>!\n🎁 Награда: редкий предмет",
                     parse_mode="HTML",
                 ))
@@ -1995,12 +1994,15 @@ async def admin_callback(call: CallbackQuery):
         await call.answer("🚫 Нет доступа!", show_alert=True)
         return
 
-    parts = call.data.split("_")
-    action = parts[1]
+    data = call.data  # e.g. "admin_give_ach_3" or "admin_stats"
+    parts = data.split("_")  # ["admin", "give", "ach", "3"] or ["admin", "stats"]
 
-    # ── Выдача конкретного достижения (длинный callback) ──
-    if action == "give_ach" and len(parts) == 4:
+    # ── Выдача конкретного достижения: admin_give_ach_<id> ──
+    if data.startswith("admin_give_ach_") and len(parts) == 4 and parts[3].isdigit():
         ach_id = int(parts[3])
+        if ach_id not in ACHIEVEMENTS:
+            await call.answer("❌ Несуществующее достижение!", show_alert=True)
+            return
         admin_actions[call.from_user.id] = {"action": "give_ach", "ach_id": ach_id, "step": 1}
         await call.message.edit_text(
             f"🏅 Введите @username пользователя, которому выдать достижение «{ACHIEVEMENTS[ach_id]['name']}»:",
@@ -2009,9 +2011,12 @@ async def admin_callback(call: CallbackQuery):
         await call.answer()
         return
 
-    # ── Выдача конкретного предмета (длинный callback) ──
-    if action == "give_item" and len(parts) == 4:
+    # ── Выдача конкретного предмета: admin_give_item_<id> ──
+    if data.startswith("admin_give_item_") and len(parts) == 4 and parts[3].isdigit():
         item_id = int(parts[3])
+        if item_id not in SHOP_ITEMS:
+            await call.answer("❌ Несуществующий предмет!", show_alert=True)
+            return
         admin_actions[call.from_user.id] = {"action": "give_item", "item_id": item_id, "step": 1}
         await call.message.edit_text(
             f"📦 Введите @username пользователя, которому выдать предмет «{SHOP_ITEMS[item_id]['name']}»:",
@@ -2020,7 +2025,10 @@ async def admin_callback(call: CallbackQuery):
         await call.answer()
         return
 
-    # ── Остальные действия ──
+    # ── Остальные действия: action = часть после "admin_" ──
+    # Для "admin_give_ach" → action = "give_ach"; для "admin_stats" → action = "stats"
+    action = "_".join(parts[1:])  # всё после "admin_"
+
     if action == "stats":
         conn = get_conn()
         c = conn.cursor()
