@@ -2305,13 +2305,23 @@ async def rp_handler(message: Message):
         target = message.reply_to_message.from_user
         ensure_user(target.id, target.username or target.full_name)
 
-        # Подстановка {actor} и {target} в тексте
+                # Подстановка {actor} и {target} с упоминаниями (как в обычных РП)
+        actor_id = message.from_user.id
+        target_id = target.id
         actor_name = message.from_user.full_name
         target_name = target.full_name
+        
+        # Создаём кликабельные упоминания
+        actor_mention = f"<a href='tg://user?id={actor_id}'>{actor_name}</a>"
+        target_mention = f"<a href='tg://user?id={target_id}'>{target_name}</a>"
+        
+        # Заменяем переменные
         final_text = (
             response_text
-            .replace("{actor}", actor_name)
-            .replace("{target}", target_name)
+            .replace("{actor}", actor_mention)      # ссылка на актёра
+            .replace("{target}", target_mention)    # ссылка на цель
+            .replace("{actor_name}", actor_name)    # просто имя актёра
+            .replace("{target_name}", target_name)  # просто имя цели
         )
 
         # +5 XP за использование своей кастомной команды
