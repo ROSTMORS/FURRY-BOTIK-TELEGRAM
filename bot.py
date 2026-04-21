@@ -2603,50 +2603,41 @@ async def cmd_elo(message: Message):
 # Использование: /profile — свой профиль, /profile @username — профиль другого
 # В профиле есть: уровень, ранг, баланс, XP, ELO, брак, достижения, кастомные команды
 
-@router.message(Command("profile"))
-async def cmd_profile(message: Message):
-    ensure_user(message.from_user.id, message.from_user.username or message.from_user.full_name)
-    
-    args = message.text.split()
-    if len(args) > 1 and args[1].startswith("@"):
-        target_id = find_user_by_username(args[1])
-        if not target_id:
-            await message.reply("❌ Пользователь не найден.")
-            return
-    else:
-        target_id = message.from_user.id
-    
-    u = get_user(target_id)
+async def show_profile(target, user_id: int):
+    """Универсальная функция показа профиля (для команды и кнопки Назад)"""
+    u = get_user(user_id)
     if not u:
-        await message.reply("❌ Пользователь не найден.")
+        if isinstance(target, CallbackQuery):
+            await target.message.edit_text("❌ Пользователь не найден.")
+        else:
+            await target.reply("❌ Пользователь не найден.")
         return
-    
-    stats = get_user_stats(target_id)
+
+    stats = get_user_stats(user_id)
     level = calc_level(u["xp"])
     rank_name, rank_emoji = get_rank(level)
-    elo = get_elo(target_id)
-    elo_rank = get_elo_rank(target_id)
-    
+    elo = get_elo(user_id)
+    elo_rank = get_elo_rank(user_id)
+
     conn = get_conn()
     c = conn.cursor()
-    c.execute("SELECT COUNT(*) FROM achievements WHERE user_id=?", (target_id,))
+    c.execute("SELECT COUNT(*) FROM achievements WHERE user_id=?", (user_id,))
     ach_count = c.fetchone()[0]
     conn.close()
-    
-    m = get_marriage(target_id)
+
+    m = get_marriage(user_id)
     if m:
-        partner_id = m["user2_id"] if m["user1_id"] == target_id else m["user1_id"]
+        partner_id = m["user2_id"] if m["user1_id"] == user_id else m["user1_id"]
         partner_name = get_username_by_id(partner_id)
         partner_mention = f"<a href='tg://user?id={partner_id}'>{partner_name}</a>"
         days_married = (int(time.time()) - m["married_since"]) // 86400
         marriage_info = f"💍 {partner_mention} ({days_married} дн.)"
     else:
         marriage_info = "💔 нет"
-    
-    user_name = u["username"] or str(target_id)
-    user_mention = f"<a href='tg://user?id={target_id}'>{user_name}</a>"
-    
-    # НОВОЕ ОФОРМЛЕНИЕ (вариант 1)
+
+    user_name = u["username"] or str(user_id)
+    user_mention = f"<a href='tg://user?id={user_id}'>{user_name}</a>"
+
     profile_text = f"""
 🦊 <b>ПРОФИЛЬ ПОЛЬЗОВАТЕЛЯ</b> 🦊
 ———————————————
@@ -2669,15 +2660,34 @@ async def cmd_profile(message: Message):
 ❓ Правильных ответов: <b>{stats['total_quiz_correct']}</b>
 🏅 Достижений: <b>{ach_count}/12</b>
 """
-    
+
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="🏅 Достижения", callback_data=f"profile_achievements_{target_id}"),
-            InlineKeyboardButton(text="🎭 Мои команды", callback_data=f"profile_commands_{target_id}"),
+            InlineKeyboardButton(text="🏅 Достижения", callback_data=f"profile_achievements_{user_id}"),
+            InlineKeyboardButton(text="🎭 Мои команды", callback_data=f"profile_commands_{user_id}"),
         ]
     ])
-    
-    await message.reply(profile_text, parse_mode="HTML", reply_markup=kb)
+
+    if isinstance(target, CallbackQuery):
+        await target.message.edit_text(profile_text, parse_mode="HTML", reply_markup=kb)
+    else:
+        await target.reply(profile_text, parse_mode="HTML", reply_markup=kb)
+
+
+@router.message(Command("profile"))
+async def cmd_profile(message: Message):
+    ensure_user(message.from_user.id, message.from_user.username or message.from_user.full_name)
+
+    args = message.text.split()
+    if len(args) > 1 and args[1].startswith("@"):
+        target_id = find_user_by_username(args[1])
+        if not target_id:
+            await message.reply("❌ Пользователь не найден.")
+            return
+    else:
+        target_id = message.from_user.id
+
+    await show_profile(message, target_id)
 
 
 # ─────────────────── ПРОФИЛЬ: ДОСТИЖЕНИЯ ─────────────────────────
@@ -2692,13 +2702,16 @@ async def profile_achievements(call: CallbackQuery):
     c.execute("SELECT achievement_id FROM achievements WHERE user_id=?", (target_id,))
     earned = [row[0] for row in c.fetchall()]
     conn.close()
-    
+
     text = "🏅 <b>ДОСТИЖЕНИЯ</b>\n\n"
     for ach_id, ach in ACHIEVEMENTS.items():
         status = "✅" if ach_id in earned else "🔒"
         text += f"{status} {ach['icon']} <b>{ach['name']}</b>\n   <i>{ach['desc']}</i>\n\n"
-    
-    await call.message.edit_text(text, parse_mode="HTML")
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="◀️ Назад", callback_data=f"profile_back_{target_id}")]
+    ])
+    await call.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
 
 
 # ─────────────────── ПРОФИЛЬ: КАСТОМНЫЕ КОМАНДЫ ──────────────────
@@ -2713,15 +2726,28 @@ async def profile_commands(call: CallbackQuery):
     c.execute("SELECT keyword, uses_count FROM custom_rp WHERE user_id=? ORDER BY uses_count DESC", (target_id,))
     rows = c.fetchall()
     conn.close()
-    
+
     if not rows:
         text = "🎭 <b>КАСТОМНЫЕ КОМАНДЫ</b>\n\nУ пользователя нет кастомных РП-команд."
     else:
         text = "🎭 <b>КАСТОМНЫЕ КОМАНДЫ</b>\n\n"
         for kw, uses in rows:
             text += f"• <b>{kw}</b> (использований: {uses})\n"
-    
-    await call.message.edit_text(text, parse_mode="HTML")
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="◀️ Назад", callback_data=f"profile_back_{target_id}")]
+    ])
+    await call.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+
+
+# ─────────────────── ПРОФИЛЬ: НАЗАД ─────────────────────────────
+# Обработчик кнопки "Назад" из разделов достижений и команд
+
+@router.callback_query(F.data.startswith("profile_back_"))
+async def profile_back(call: CallbackQuery):
+    target_id = int(call.data.split("_")[2])
+    await show_profile(call, target_id)
+    await call.answer()
 
 # ─────────────────────────── /TOP_ELO ─────────────────────────────
 # Команда показывает топ-10 игроков по ELO рейтингу
