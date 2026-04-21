@@ -1998,7 +1998,14 @@ def admin_panel_kb():
 async def cmd_admin_panel(message: Message):
     await message.reply("🛠️ <b>АДМИН-ПАНЕЛЬ</b>\n\nВыбери действие:", parse_mode="HTML", reply_markup=admin_panel_kb())
 
-
+@router.callback_query(F.data == "admin_cancel")
+async def admin_cancel(call: CallbackQuery):
+    # Очищаем состояние админа
+    if call.from_user.id in admin_actions:
+        del admin_actions[call.from_user.id]
+    await call.message.edit_text("🛠️ <b>АДМИН-ПАНЕЛЬ</b>\n\nВыбери действие:", parse_mode="HTML", reply_markup=admin_panel_kb())
+    await call.answer()
+    
 @router.callback_query(F.data.startswith("admin_"))
 async def admin_callback(call: CallbackQuery):
     if not is_admin(call.from_user.id):
@@ -2119,18 +2126,10 @@ async def admin_callback(call: CallbackQuery):
         )
     await call.answer()
 
-
-@router.callback_query(F.data == "admin_cancel")
-async def admin_cancel(call: CallbackQuery):
-    # Очищаем состояние админа
-    if call.from_user.id in admin_actions:
-        del admin_actions[call.from_user.id]
-    await call.message.edit_text("🛠️ <b>АДМИН-ПАНЕЛЬ</b>\n\nВыбери действие:", parse_mode="HTML", reply_markup=admin_panel_kb())
-    await call.answer()
-
-
-@router.message(F.text, F.chat.func(lambda chat: chat.type == "private"))
+@router.message(F.text)
 async def admin_input_handler(message: Message):
+    # Добавим отладочный вывод (можно убрать после проверки)
+    print(f"DEBUG: admin_input_handler вызван для {message.from_user.id}, текст: {message.text}")
     """Обрабатывает ввод от админа в рамках админ-панели."""
     user_id = message.from_user.id
     if not is_admin(user_id):
