@@ -162,7 +162,7 @@ def init_db():
             UNIQUE(user_id, keyword)
         );
 
-               -- Статистика пользователей
+        -- Статистика пользователей
         CREATE TABLE IF NOT EXISTS user_stats (
             user_id             INTEGER PRIMARY KEY,
             total_rp_actions    INTEGER DEFAULT 0,
@@ -190,6 +190,17 @@ def init_db():
             PRIMARY KEY (user_id, bonus_date)
         );
     """)
+
+    # ── МИГРАЦИЯ: добавляем недостающие колонки в существующую таблицу user_stats ──
+    try:
+        c.execute("ALTER TABLE user_stats ADD COLUMN first_seen INTEGER DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass  # колонка уже существует
+    try:
+        c.execute("ALTER TABLE user_stats ADD COLUMN last_seen INTEGER DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
+
     conn.commit()
     conn.close()
 
