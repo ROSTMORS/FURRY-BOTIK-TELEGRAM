@@ -33,15 +33,12 @@ from aiogram.types import (
 )
 from dotenv import load_dotenv
 import shutil
-from datetime import datetime
 
 # ─────────────────────────── НАСТРОЙКА ────────────────────────────
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 # ДИАГНОСТИКА
-print(f"DEBUG: BOT_TOKEN = {BOT_TOKEN}")
-print(f"DEBUG: All env keys = {list(os.environ.keys())}")
 if not BOT_TOKEN:
     print("ERROR: BOT_TOKEN is None! Check Railway Variables")
 
@@ -58,6 +55,9 @@ router = Router()
 dp.include_router(router)
 
 DB_FILE = "/app/data/database.db"
+
+# Временное хранилище для админ-действий (ожидание ввода)
+admin_actions = {}  # {user_id: {"action": "give_money" или "broadcast", "step": 1}}
 
 # ─────────────────────────── БАЗА ДАННЫХ ──────────────────────────
 
@@ -876,7 +876,7 @@ async def cmd_start(message: Message):
         "💰 *Экономика* — /balance, /daily, /give, /shop, /buy, /inventory\n"
         "💍 *Браки* — «Предложить брак @user», /marry, /divorce\n"
         "🏅 *Достижения* — /achievements\n"
-        "📊 *Статистика* — /stats\n"
+        "📊 *Профиль* — /profile\n"
         "🎁 *Бонус дня* — /daily\\_bonus\n\n"
         "📋 Полный список: /help"
     )
@@ -940,7 +940,6 @@ async def cmd_help(message: Message):
         "/bonus_info — информация о бонусе\n"
         "<b>🛠️ Админ-команды</b>\n"
         "/admin_panel — админ-панель\n"
-        "/chats — статистика бота\n"
     )
     await message.reply(text, parse_mode="HTML")
 
@@ -1219,7 +1218,12 @@ async def cmd_duel(message: Message):
     if target_id == message.from_user.id:
         await message.reply("❌ Нельзя дуэлировать с собой.")
         return
+    # Гарантируем, что цель есть в базе
+    ensure_user(target_id, args[1].lstrip("@"))
     target_user = get_user(target_id)
+    if not target_user:
+        await message.reply("❌ Ошибка: не удалось получить данные цели.")
+        return
     if target_user["balance"] < amount:
         await message.reply(f"❌ У {mention(target_user['username'], target_id)} недостаточно монет.", parse_mode="Markdown")
         return
@@ -1243,11 +1247,21 @@ async def cb_duel_accept(call: CallbackQuery):
     if call.from_user.id != target_id:
         await call.answer("Это не ваша дуэль!", show_alert=True)
         return
+
+    # Гарантируем, что оба участника есть в БД
+    ensure_user(challenger_id)
+    ensure_user(target_id)
+
     c_user = get_user(challenger_id)
     t_user = get_user(target_id)
+    if not c_user or not t_user:
+        await call.message.edit_text("❌ Ошибка: данные участников не найдены.", reply_markup=None)
+        return
+
     if c_user["balance"] < amount or t_user["balance"] < amount:
         await call.message.edit_text("❌ Недостаточно монет у одного из участников. Дуэль отменена.", reply_markup=None)
         return
+
     c_roll, t_roll = random.randint(1, 6), random.randint(1, 6)
     c_name = get_username_by_id(challenger_id)
     t_name = get_username_by_id(target_id)
@@ -1257,7 +1271,6 @@ async def cb_duel_accept(call: CallbackQuery):
     stat_increment(target_id, "total_games_played")
 
     if c_roll == t_roll:
-        # Серии не изменяются при ничьей
         await call.message.edit_text(
             f"🎲 {mention(c_name, challenger_id)}: {c_roll} vs {mention(t_name, target_id)}: {t_roll}\n🤝 Ничья\\! Монеты возвращены\\.",
             parse_mode="MarkdownV2", reply_markup=None,
@@ -1267,12 +1280,13 @@ async def cb_duel_accept(call: CallbackQuery):
             winner_id, loser_id, winner_name = challenger_id, target_id, c_name
         else:
             winner_id, loser_id, winner_name = target_id, challenger_id, t_name
+
         add_balance(loser_id, -amount)
         add_balance(winner_id, amount)
         xp_win = apply_xp_bonus(winner_id, 15)
         add_xp(winner_id, xp_win)
-        
-                # Обновляем ELO рейтинг
+
+        # Обновляем ELO рейтинг
         update_elo(winner_id, loser_id)
 
         # Статистика победителя
@@ -1301,6 +1315,8 @@ async def cb_duel_accept(call: CallbackQuery):
 @router.callback_query(F.data.startswith("duel_decline_"))
 async def cb_duel_decline(call: CallbackQuery):
     challenger_id = int(call.data.split("_")[2])
+    # Гарантируем, что отклонивший пользователь есть в БД
+    ensure_user(call.from_user.id, call.from_user.username or call.from_user.full_name)
     c_name = get_username_by_id(challenger_id)
     await call.message.edit_text(
         f"🏳️ {mention(call.from_user.full_name, call.from_user.id)} отказался от дуэли с {mention(c_name, challenger_id)}\\.",
@@ -1418,7 +1434,12 @@ async def cmd_give(message: Message):
     if target_id == message.from_user.id:
         await message.reply("❌ Нельзя переводить самому себе.")
         return
+    # Гарантируем, что получатель есть в базе
+    ensure_user(target_id, args[1].lstrip("@"))
     target_user = get_user(target_id)
+    if not target_user:
+        await message.reply("❌ Ошибка: не удалось получить данные получателя.")
+        return
     add_balance(message.from_user.id, -amount)
     add_balance(target_id, amount)
 
@@ -1973,9 +1994,33 @@ async def admin_callback(call: CallbackQuery):
     if not is_admin(call.from_user.id):
         await call.answer("🚫 Нет доступа!", show_alert=True)
         return
-    
-    action = call.data.split("_")[1]
-    
+
+    parts = call.data.split("_")
+    action = parts[1]
+
+    # ── Выдача конкретного достижения (длинный callback) ──
+    if action == "give_ach" and len(parts) == 4:
+        ach_id = int(parts[3])
+        admin_actions[call.from_user.id] = {"action": "give_ach", "ach_id": ach_id, "step": 1}
+        await call.message.edit_text(
+            f"🏅 Введите @username пользователя, которому выдать достижение «{ACHIEVEMENTS[ach_id]['name']}»:",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Отмена", callback_data="admin_cancel")]])
+        )
+        await call.answer()
+        return
+
+    # ── Выдача конкретного предмета (длинный callback) ──
+    if action == "give_item" and len(parts) == 4:
+        item_id = int(parts[3])
+        admin_actions[call.from_user.id] = {"action": "give_item", "item_id": item_id, "step": 1}
+        await call.message.edit_text(
+            f"📦 Введите @username пользователя, которому выдать предмет «{SHOP_ITEMS[item_id]['name']}»:",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Отмена", callback_data="admin_cancel")]])
+        )
+        await call.answer()
+        return
+
+    # ── Остальные действия ──
     if action == "stats":
         conn = get_conn()
         c = conn.cursor()
@@ -1990,7 +2035,6 @@ async def admin_callback(call: CallbackQuery):
         c.execute("SELECT COUNT(*) FROM elo_ratings WHERE games_played > 0")
         duelists = c.fetchone()[0]
         conn.close()
-        
         await call.message.edit_text(
             f"📊 <b>СТАТИСТИКА БОТА</b>\n\n"
             f"👥 Пользователей: <b>{users}</b>\n"
@@ -2001,49 +2045,152 @@ async def admin_callback(call: CallbackQuery):
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="admin_back")]])
         )
-    
     elif action == "users":
         conn = get_conn()
         c = conn.cursor()
         c.execute("SELECT user_id, username, xp, level, balance FROM users ORDER BY xp DESC LIMIT 20")
         rows = c.fetchall()
         conn.close()
-        
         text = "👥 <b>ТОП-20 ПОЛЬЗОВАТЕЛЕЙ (по XP)</b>\n\n"
         for i, (uid, name, xp, lvl, bal) in enumerate(rows, 1):
             display = name or str(uid)
             text += f"{i}. {display} — ур.{lvl} ({xp} XP) | {bal}🪙\n"
-        
         await call.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="admin_back")]]))
-    
     elif action == "back":
         await call.message.edit_text("🛠️ <b>АДМИН-ПАНЕЛЬ</b>\n\nВыбери действие:", parse_mode="HTML", reply_markup=admin_panel_kb())
-    
     elif action == "backup":
         await call.message.edit_text("💾 Создаю бэкап...")
         if backup_database():
             await call.message.edit_text("✅ Бэкап успешно создан!", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="admin_back")]]))
         else:
             await call.message.edit_text("❌ Ошибка при создании бэкапа!", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="admin_back")]]))
-    
-    elif action == "give":
-        # Запрос username
-        await call.message.edit_text("💰 Введите @username пользователя:", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Отмена", callback_data="admin_cancel")]]))
-        # Сохраняем состояние в памяти (упрощённо — в следующем сообщении)
-    
     elif action == "give_money":
-        await call.message.edit_text("💰 Введите @username и сумму через пробел\nПример: @user 100", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Отмена", callback_data="admin_back")]]))
-    
+        admin_actions[call.from_user.id] = {"action": "give_money", "step": 1}
+        await call.message.edit_text(
+            "💰 Введите @username и сумму через пробел\nПример: @user 100\n\nИли нажмите Отмена.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Отмена", callback_data="admin_cancel")]])
+        )
+    elif action == "give_ach":  # Список достижений
+        buttons = []
+        for ach_id, ach in ACHIEVEMENTS.items():
+            buttons.append([InlineKeyboardButton(text=f"{ach['icon']} {ach['name']}", callback_data=f"admin_give_ach_{ach_id}")])
+        buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="admin_back")])
+        await call.message.edit_text(
+            "🏅 Выбери достижение для выдачи:",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons)
+        )
+    elif action == "give_item":  # Список предметов
+        buttons = []
+        for item_id, item in SHOP_ITEMS.items():
+            if item_id == 13:
+                continue
+            buttons.append([InlineKeyboardButton(text=f"{item['name']}", callback_data=f"admin_give_item_{item_id}")])
+        buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="admin_back")])
+        await call.message.edit_text(
+            "📦 Выбери предмет для выдачи:",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons)
+        )
     elif action == "broadcast":
-        await call.message.edit_text("📨 Введите сообщение для рассылки:", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Отмена", callback_data="admin_back")]]))
-    
+        admin_actions[call.from_user.id] = {"action": "broadcast", "step": 1}
+        await call.message.edit_text(
+            "📨 Введите сообщение для рассылки (бот отправит его всем пользователям):\n\nИли нажмите Отмена.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Отмена", callback_data="admin_cancel")]])
+        )
     await call.answer()
 
 
 @router.callback_query(F.data == "admin_cancel")
 async def admin_cancel(call: CallbackQuery):
+    # Очищаем состояние админа
+    if call.from_user.id in admin_actions:
+        del admin_actions[call.from_user.id]
     await call.message.edit_text("🛠️ <b>АДМИН-ПАНЕЛЬ</b>\n\nВыбери действие:", parse_mode="HTML", reply_markup=admin_panel_kb())
     await call.answer()
+
+
+@router.message(F.text, F.chat.func(lambda chat: chat.type == "private"))
+async def admin_input_handler(message: Message):
+    """Обрабатывает ввод от админа в рамках админ-панели."""
+    user_id = message.from_user.id
+    if not is_admin(user_id):
+        return
+
+    if user_id not in admin_actions:
+        return
+
+    action_data = admin_actions[user_id]
+    action = action_data["action"]
+    step = action_data.get("step", 1)
+
+    if action == "give_money" and step == 1:
+        parts = message.text.split()
+        if len(parts) != 2 or not parts[0].startswith("@") or not parts[1].isdigit():
+            await message.reply("❌ Неверный формат. Нужно: @username сумма")
+            return
+        target_id = find_user_by_username(parts[0])
+        if not target_id:
+            await message.reply("❌ Пользователь не найден.")
+            return
+        amount = int(parts[1])
+        add_balance(target_id, amount)
+        log_admin_action(user_id, "add_money", target_id, str(amount))
+        await message.reply(f"✅ Выдано {amount} монет пользователю {parts[0]}")
+        del admin_actions[user_id]
+
+    elif action == "give_ach" and step == 1:
+        username = message.text.strip()
+        if not username.startswith("@"):
+            await message.reply("❌ Введите username с @")
+            return
+        target_id = find_user_by_username(username)
+        if not target_id:
+            await message.reply("❌ Пользователь не найден.")
+            return
+        ach_id = action_data["ach_id"]
+        if not has_achievement(target_id, ach_id):
+            grant_achievement(target_id, ach_id)
+            log_admin_action(user_id, "give_achievement", target_id, f"ach_{ach_id}")
+            await message.reply(f"✅ Выдано достижение «{ACHIEVEMENTS[ach_id]['name']}» пользователю {username}")
+        else:
+            await message.reply(f"⚠️ У пользователя {username} уже есть это достижение.")
+        del admin_actions[user_id]
+
+    elif action == "give_item" and step == 1:
+        username = message.text.strip()
+        if not username.startswith("@"):
+            await message.reply("❌ Введите username с @")
+            return
+        target_id = find_user_by_username(username)
+        if not target_id:
+            await message.reply("❌ Пользователь не найден.")
+            return
+        item_id = action_data["item_id"]
+        _add_to_inventory(target_id, item_id)
+        log_admin_action(user_id, "give_item", target_id, f"item_{item_id}")
+        await message.reply(f"✅ Выдан предмет «{SHOP_ITEMS[item_id]['name']}» пользователю {username}")
+        del admin_actions[user_id]
+
+    elif action == "broadcast" and step == 1:
+        text = message.text
+        conn = get_conn()
+        c = conn.cursor()
+        c.execute("SELECT user_id FROM users")
+        users = [row[0] for row in c.fetchall()]
+        conn.close()
+
+        sent = 0
+        for uid in users:
+            try:
+                await bot.send_message(uid, f"📢 <b>Сообщение от администратора:</b>\n\n{text}", parse_mode="HTML")
+                sent += 1
+                await asyncio.sleep(0.05)
+            except:
+                pass
+        await message.reply(f"📢 Рассылка завершена. Отправлено: {sent} пользователям.")
+        del admin_actions[user_id]
+
 
 @router.message(Command("backup"))
 @admin_only
@@ -2163,61 +2310,7 @@ async def cmd_achievement_detail(message: Message):
         parse_mode="HTML",
     )
 
-# ─────────────────────────── /STATS ───────────────────────────────
-
-@router.message(Command("stats"))
-async def cmd_stats(message: Message):
-    ensure_user(message.from_user.id, message.from_user.username or message.from_user.full_name)
-
-    # Определяем цель: себя или другого пользователя
-    args = message.text.split()
-    if len(args) > 1 and args[1].startswith("@"):
-        target_id = find_user_by_username(args[1])
-        if not target_id:
-            await message.reply("❌ Пользователь не найден.")
-            return
-        target_name = get_username_by_id(target_id)
-    else:
-        target_id = message.from_user.id
-        target_name = message.from_user.full_name
-
-    u = get_user(target_id)
-    if not u:
-        await message.reply("❌ Пользователь не найден.")
-        return
-
-    stats = get_user_stats(target_id)
-    level = calc_level(u["xp"])
-    rank_name, rank_emoji = get_rank(level)
-
-    # Дней в боте (с момента первого появления в БД — approximation by user_id order)
-    conn = get_conn(); c = conn.cursor()
-    c.execute("SELECT COUNT(*) FROM achievements WHERE user_id=?", (target_id,))
-    ach_count = c.fetchone()[0]
-    conn.close()
-
-    m = get_marriage(target_id)
-    marriage_info = "нет"
-    if m:
-        partner_id = m["user2_id"] if m["user1_id"] == target_id else m["user1_id"]
-        partner_name = get_username_by_id(partner_id)
-        days_married = (int(time.time()) - m["married_since"]) // 86400
-        marriage_info = f"{partner_name} ({days_married} дн.)"
-
-    await message.reply(
-        f"📊 <b>Статистика: {target_name}</b>\n\n"
-        f"🏆 Уровень: <b>{level}</b> ({u['xp']} XP)\n"
-        f"🦊 Ранг: {rank_emoji} <b>{rank_name}</b>\n"
-        f"💰 Баланс: <b>{u['balance']} 🪙</b>\n"
-        f"💍 Брак: {marriage_info}\n\n"
-        f"🎭 РП-действий: <b>{stats['total_rp_actions']}</b>\n"
-        f"🎲 Игр сыграно: <b>{stats['total_games_played']}</b>\n"
-        f"⚔️ Дуэлей выиграно: <b>{stats['total_duels_won']}</b>\n"
-        f"💸 Монет подарено: <b>{stats['total_money_given']}</b>\n"
-        f"❓ Правильных ответов в квизе: <b>{stats['total_quiz_correct']}</b>\n"
-        f"🏅 Достижений: <b>{ach_count}/{len(ACHIEVEMENTS)}</b>",
-        parse_mode="HTML",
-    )
+# ─────────────────────────── /TOP_ACTIVITY ───────────────────────────────
 
 @router.message(Command("top_activity"))
 async def cmd_top_activity(message: Message):
@@ -2240,6 +2333,8 @@ async def cmd_top_activity(message: Message):
             when = "давно"
         lines.append(f"{i}. {name or '???'} — {when}")
     await message.reply("\n".join(lines), parse_mode="HTML")
+
+# ─────────────────────────── /TOP_RP_ACTIONS ─────────────────────────────
 
 @router.message(Command("top_rp_actions"))
 async def cmd_top_rp_actions(message: Message):
