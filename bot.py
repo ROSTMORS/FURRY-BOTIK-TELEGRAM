@@ -2607,7 +2607,6 @@ async def cmd_elo(message: Message):
 async def cmd_profile(message: Message):
     ensure_user(message.from_user.id, message.from_user.username or message.from_user.full_name)
     
-    # Определяем цель: себя или другого пользователя (если указан @username)
     args = message.text.split()
     if len(args) > 1 and args[1].startswith("@"):
         target_id = find_user_by_username(args[1])
@@ -2617,27 +2616,23 @@ async def cmd_profile(message: Message):
     else:
         target_id = message.from_user.id
     
-    # Получаем данные пользователя из БД
     u = get_user(target_id)
     if not u:
         await message.reply("❌ Пользователь не найден.")
         return
     
-    # Получаем статистику, уровень, ранг, ELO
     stats = get_user_stats(target_id)
     level = calc_level(u["xp"])
     rank_name, rank_emoji = get_rank(level)
     elo = get_elo(target_id)
     elo_rank = get_elo_rank(target_id)
     
-    # Считаем количество полученных достижений
     conn = get_conn()
     c = conn.cursor()
     c.execute("SELECT COUNT(*) FROM achievements WHERE user_id=?", (target_id,))
     ach_count = c.fetchone()[0]
     conn.close()
     
-    # Получаем информацию о браке (если есть)
     m = get_marriage(target_id)
     if m:
         partner_id = m["user2_id"] if m["user1_id"] == target_id else m["user1_id"]
@@ -2648,40 +2643,33 @@ async def cmd_profile(message: Message):
     else:
         marriage_info = "💔 нет"
     
-    # Создаём кликабельное имя пользователя
     user_name = u["username"] or str(target_id)
     user_mention = f"<a href='tg://user?id={target_id}'>{user_name}</a>"
     
-    # Красивая карточка с рамкой
+    # НОВОЕ ОФОРМЛЕНИЕ (вариант 1)
     profile_text = f"""
-╔════════════════════════════════════════╗
-║        🦊 <b>ПРОФИЛЬ ПОЛЬЗОВАТЕЛЯ</b> 🦊       ║
-╠════════════════════════════════════════╣
-║                                        ║
-║    🌟 {user_mention}
-║                                        ║
-║    🏆 Уровень: <b>{level}</b>
-║    {rank_emoji} Ранг: <b>{rank_name}</b>
-║    💰 Баланс: <b>{u['balance']} 🪙</b>
-║    ✨ Опыт: <b>{u['xp']} XP</b>
-║    ⚔️ ELO: <b>{elo}</b> ({elo_rank})
-║    💍 Брак: {marriage_info}
-║                                        ║
-╠════════════════════════════════════════╣
-║        📊 <b>СТАТИСТИКА</b>                 ║
-╠════════════════════════════════════════╣
-║                                        ║
-║    🎭 РП-действий: <b>{stats['total_rp_actions']}</b>
-║    🎲 Игр сыграно: <b>{stats['total_games_played']}</b>
-║    ⚔️ Дуэлей выиграно: <b>{stats['total_duels_won']}</b>
-║    💸 Монет подарено: <b>{stats['total_money_given']}</b>
-║    ❓ Правильных ответов: <b>{stats['total_quiz_correct']}</b>
-║    🏅 Достижений: <b>{ach_count}/12</b>
-║                                        ║
-╚════════════════════════════════════════╝
+🦊 <b>ПРОФИЛЬ ПОЛЬЗОВАТЕЛЯ</b> 🦊
+———————————————
+
+🌟 {user_mention}
+
+🏆 Уровень: <b>{level}</b>
+{rank_emoji} Ранг: <b>{rank_name}</b>
+💰 Баланс: <b>{u['balance']} 🪙</b>
+✨ Опыт: <b>{u['xp']} XP</b>
+⚔️ ELO: <b>{elo}</b> ({elo_rank})
+💍 Брак: {marriage_info}
+
+📊 <b>СТАТИСТИКА</b>
+———————————————
+🎭 РП-действий: <b>{stats['total_rp_actions']}</b>
+🎲 Игр сыграно: <b>{stats['total_games_played']}</b>
+⚔️ Дуэлей выиграно: <b>{stats['total_duels_won']}</b>
+💸 Монет подарено: <b>{stats['total_money_given']}</b>
+❓ Правильных ответов: <b>{stats['total_quiz_correct']}</b>
+🏅 Достижений: <b>{ach_count}/12</b>
 """
     
-    # Кнопки для просмотра достижений и кастомных команд
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text="🏅 Достижения", callback_data=f"profile_achievements_{target_id}"),
