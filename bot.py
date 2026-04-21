@@ -917,28 +917,31 @@ async def _send_leaderboard(target, mode: str):
         rows = c.fetchall()
         lines = ["🏆 <b>Топ по уровню:</b>"]
         for i, (uid, name, xp, lvl) in enumerate(rows, 1):
-            crown = _has_item(uid, 12)
-            prefix = "👑 " if crown else ""
-            lines.append(f"{i}. {prefix}{name or '???'} — Ур.{lvl} ({xp} XP)")
+            crown = "👑 " if _has_item(uid, 12) else ""
+            display_name = name or str(uid)
+            mention = f"<a href='tg://user?id={uid}'>{display_name}</a>"
+            lines.append(f"{i}. {crown}{mention} — Ур.{lvl} ({xp} XP)")
     elif mode == "lb_money":
         c.execute("SELECT user_id, username, balance FROM users ORDER BY balance DESC LIMIT 10")
         rows = c.fetchall()
         lines = ["💰 <b>Топ по монетам:</b>"]
         for i, (uid, name, bal) in enumerate(rows, 1):
-            crown = _has_item(uid, 12)
-            prefix = "👑 " if crown else ""
-            lines.append(f"{i}. {prefix}{name or '???'} — {bal} 🪙")
+            crown = "👑 " if _has_item(uid, 12) else ""
+            display_name = name or str(uid)
+            mention = f"<a href='tg://user?id={uid}'>{display_name}</a>"
+            lines.append(f"{i}. {crown}{mention} — {bal} 🪙")
     elif mode == "lb_rank":
-        # Сортировка по уровню (=рангу)
         c.execute("SELECT user_id, username, level FROM users ORDER BY level DESC LIMIT 10")
         rows = c.fetchall()
         lines = ["🦊 <b>Топ по рангу:</b>"]
         for i, (uid, name, lvl) in enumerate(rows, 1):
             rank_name, rank_emoji = get_rank(lvl)
-            lines.append(f"{i}. {name or '???'} — {rank_emoji} {rank_name} (Ур.{lvl})")
-    else:
+            display_name = name or str(uid)
+            mention = f"<a href='tg://user?id={uid}'>{display_name}</a>"
+            lines.append(f"{i}. {mention} — {rank_emoji} {rank_name} (Ур.{lvl})")
+    else:  # lb_marriages
         c.execute(
-            "SELECT u1.username, u2.username, m.married_since "
+            "SELECT u1.user_id, u1.username, u2.user_id, u2.username, m.married_since "
             "FROM marriages m "
             "JOIN users u1 ON u1.user_id=m.user1_id "
             "JOIN users u2 ON u2.user_id=m.user2_id "
@@ -946,9 +949,11 @@ async def _send_leaderboard(target, mode: str):
         )
         rows = c.fetchall()
         lines = ["💍 <b>Топ самых долгих браков:</b>"]
-        for i, (n1, n2, ts) in enumerate(rows, 1):
+        for i, (uid1, n1, uid2, n2, ts) in enumerate(rows, 1):
             days = (int(time.time()) - ts) // 86400
-            lines.append(f"{i}. {n1 or '???'} & {n2 or '???'} — {days} дн.")
+            mention1 = f"<a href='tg://user?id={uid1}'>{n1 or str(uid1)}</a>"
+            mention2 = f"<a href='tg://user?id={uid2}'>{n2 or str(uid2)}</a>"
+            lines.append(f"{i}. {mention1} & {mention2} — {days} дн.")
     conn.close()
     text = "\n".join(lines)
     kb = make_leaderboard_kb()
