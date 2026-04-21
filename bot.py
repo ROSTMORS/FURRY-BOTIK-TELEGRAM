@@ -628,7 +628,7 @@ async def check_achievements(user_id: int, message: Message):
     # Отправляем уведомления о новых достижениях
     for ach_id in newly_earned:
         ach = ACHIEVEMENTS[ach_id]
-        await message.answer(
+        await message.reply(
             f"🏅 <b>Новое достижение!</b>\n"
             f"{ach['icon']} <b>{ach['name']}</b>\n"
             f"<i>{ach['desc']}</i>\n"
@@ -819,7 +819,7 @@ async def cmd_start(message: Message):
         "🎁 *Бонус дня* — /daily\\_bonus\n\n"
         "📋 Полный список: /help"
     )
-    await message.answer(text, parse_mode="MarkdownV2")
+    await message.reply(text, parse_mode="MarkdownV2")
 
 # ─────────────────────────── /HELP ────────────────────────────────
 
@@ -875,7 +875,7 @@ async def cmd_help(message: Message):
         "/daily_bonus — активировать бонус дня\n"
         "/bonus_info — информация о бонусе\n"
     )
-    await message.answer(text, parse_mode="HTML")
+    await message.reply(text, parse_mode="HTML")
 
 # ─────────────────────────── /LEVEL ───────────────────────────────
 
@@ -886,7 +886,7 @@ async def cmd_level(message: Message):
     level = calc_level(u["xp"])
     xp_needed = xp_for_level(level + 1) - u["xp"]
     rank_name, rank_emoji = get_rank(level)
-    await message.answer(
+    await message.reply(
         f"🏆 <b>{message.from_user.full_name}</b>\n"
         f"Уровень: <b>{level}</b>\n"
         f"Ранг: {rank_emoji} <b>{rank_name}</b>\n"
@@ -980,27 +980,27 @@ async def cb_leaderboard(call: CallbackQuery):
 @router.message(Command("dice"))
 async def cmd_dice(message: Message):
     ensure_user(message.from_user.id, message.from_user.username or message.from_user.full_name)
-    await message.answer(f"🎲 Выпало: <b>{random.randint(1, 6)}</b>!", parse_mode="HTML")
+    await message.reply(f"🎲 Выпало: <b>{random.randint(1, 6)}</b>!", parse_mode="HTML")
 
 @router.message(Command("d20"))
 async def cmd_d20(message: Message):
     ensure_user(message.from_user.id, message.from_user.username or message.from_user.full_name)
     r = random.randint(1, 20)
     suffix = " 🌟 <b>КРИТ!</b>" if r == 20 else (" 💀 <b>ПРОВАЛ!</b>" if r == 1 else "")
-    await message.answer(f"🎲 D20: <b>{r}</b>{suffix}", parse_mode="HTML")
+    await message.reply(f"🎲 D20: <b>{r}</b>{suffix}", parse_mode="HTML")
 
 @router.message(Command("coin"))
 async def cmd_coin(message: Message):
     ensure_user(message.from_user.id, message.from_user.username or message.from_user.full_name)
     result = random.choice(["🦅 Орёл", "✍️ Решка"])
-    await message.answer(f"🪙 <b>{result}</b>!", parse_mode="HTML")
+    await message.reply(f"🪙 <b>{result}</b>!", parse_mode="HTML")
 
 @router.message(Command("rps"))
 async def cmd_rps(message: Message):
     ensure_user(message.from_user.id, message.from_user.username or message.from_user.full_name)
     args = message.text.split(maxsplit=1)
     if len(args) < 2 or args[1].lower() not in ("камень", "ножницы", "бумага"):
-        await message.answer("✋ Использование: /rps [камень|ножницы|бумага]")
+        await message.reply("✋ Использование: /rps [камень|ножницы|бумага]")
         return
     choices = ["камень", "ножницы", "бумага"]
     emojis = {"камень": "🪨", "ножницы": "✂️", "бумага": "📄"}
@@ -1021,7 +1021,7 @@ async def cmd_rps(message: Message):
         add_xp(message.from_user.id, xp); add_balance(message.from_user.id, 20)
     else:
         result, extra = "😔 Бот победил!", ""
-    await message.answer(
+    await message.reply(
         f"Вы: {emojis[user_choice]} {user_choice}\nБот: {emojis[bot_choice]} {bot_choice}\n\n<b>{result}</b> {extra}",
         parse_mode="HTML",
     )
@@ -1041,13 +1041,13 @@ async def cmd_slots(message: Message):
             # При активном бонусе можно играть без ставки
             bet = 50  # дефолтная ставка при бесплатной игре
         else:
-            await message.answer("🎰 Использование: /slots [сумма] (мин. 10)")
+            await message.reply("🎰 Использование: /slots [сумма] (мин. 10)")
             return
     else:
         bet = int(args[1])
 
     if bet < 10:
-        await message.answer("❌ Минимальная ставка — 10 монет.")
+        await message.reply("❌ Минимальная ставка — 10 монет.")
         return
 
     u = get_user(uid)
@@ -1064,7 +1064,7 @@ async def cmd_slots(message: Message):
         conn.commit(); conn.close()
     else:
         if u["balance"] < bet:
-            await message.answer("❌ Недостаточно монет!")
+            await message.reply("❌ Недостаточно монет!")
             return
         bet_text = f"{bet} 🪙"
 
@@ -1102,14 +1102,14 @@ async def cmd_slots(message: Message):
         # Достижение #9: 3 победы подряд в слотах
         if slots_streak >= 3 and not has_achievement(uid, 9):
             if grant_achievement(uid, 9):
-                await message.answer(
+                await message.reply(
                     f"🏅 <b>Новое достижение!</b>\n🌟 <b>Любимчик фортуны</b>\n🎁 Награда: 500 монет",
                     parse_mode="HTML",
                 )
     else:
         result = f"😔 Не повезло. Потеряно: <b>{bet}</b> монет."
 
-    await message.answer(f"🎰 | {s1} | {s2} | {s3} |\n{bet_text}\n\n{result}", parse_mode="HTML")
+    await message.reply(f"🎰 | {s1} | {s2} | {s3} |\n{bet_text}\n\n{result}", parse_mode="HTML")
     await check_achievements(uid, message)
 
 @router.message(Command("duel"))
@@ -1117,32 +1117,32 @@ async def cmd_duel(message: Message):
     ensure_user(message.from_user.id, message.from_user.username or message.from_user.full_name)
     args = message.text.split()
     if len(args) < 3 or not args[1].startswith("@") or not args[2].isdigit():
-        await message.answer("⚔️ Использование: /duel @username [сумма]")
+        await message.reply("⚔️ Использование: /duel @username [сумма]")
         return
     amount = int(args[2])
     if amount <= 0:
-        await message.answer("❌ Сумма должна быть > 0.")
+        await message.reply("❌ Сумма должна быть > 0.")
         return
     challenger = get_user(message.from_user.id)
     if challenger["balance"] < amount:
-        await message.answer("❌ Недостаточно монет.")
+        await message.reply("❌ Недостаточно монет.")
         return
     target_id = find_user_by_username(args[1])
     if not target_id:
-        await message.answer("❌ Пользователь не найден в базе.")
+        await message.reply("❌ Пользователь не найден в базе.")
         return
     if target_id == message.from_user.id:
-        await message.answer("❌ Нельзя дуэлировать с собой.")
+        await message.reply("❌ Нельзя дуэлировать с собой.")
         return
     target_user = get_user(target_id)
     if target_user["balance"] < amount:
-        await message.answer(f"❌ У {mention(target_user['username'], target_id)} недостаточно монет.", parse_mode="Markdown")
+        await message.reply(f"❌ У {mention(target_user['username'], target_id)} недостаточно монет.", parse_mode="Markdown")
         return
     kb = InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text="⚔️ Принять",    callback_data=f"duel_accept_{message.from_user.id}_{target_id}_{amount}"),
         InlineKeyboardButton(text="🏳️ Отказаться", callback_data=f"duel_decline_{message.from_user.id}"),
     ]])
-    await message.answer(
+    await message.reply(
         f"⚔️ {mention(message.from_user.full_name, message.from_user.id)} вызывает "
         f"{mention(target_user['username'] or str(target_id), target_id)} на дуэль\\!\n"
         f"Ставка: *{amount}* монет 🪙\n\n"
@@ -1225,7 +1225,7 @@ async def cmd_quiz(message: Message):
     ensure_user(message.from_user.id, message.from_user.username or message.from_user.full_name)
     today_count = get_quiz_today(message.from_user.id)
     if today_count >= QUIZ_DAILY_LIMIT:
-        await message.answer("🛑 Ты сегодня уже ответил(а) на 10 вопросов! Возвращайся завтра. 📅")
+        await message.reply("🛑 Ты сегодня уже ответил(а) на 10 вопросов! Возвращайся завтра. 📅")
         return
     q = random.choice(QUIZ_QUESTIONS)
     buttons = [
@@ -1237,7 +1237,7 @@ async def cmd_quiz(message: Message):
     ]
     kb = InlineKeyboardMarkup(inline_keyboard=buttons)
     remaining = QUIZ_DAILY_LIMIT - today_count
-    await message.answer(
+    await message.reply(
         f"❓ <b>Вопрос:</b> {q['q']}\n\n<i>Осталось попыток сегодня: {remaining - 1}</i>",
         parse_mode="HTML",
         reply_markup=kb,
@@ -1273,7 +1273,7 @@ async def cb_quiz(call: CallbackQuery):
 async def cmd_balance(message: Message):
     ensure_user(message.from_user.id, message.from_user.username or message.from_user.full_name)
     u = get_user(message.from_user.id)
-    await message.answer(
+    await message.reply(
         f"💰 <b>{message.from_user.full_name}</b>\nБаланс: <b>{u['balance']}</b> 🪙",
         parse_mode="HTML",
     )
@@ -1286,7 +1286,7 @@ async def cmd_daily(message: Message):
     if now - u["daily_ts"] < 86400:
         remaining = 86400 - (now - u["daily_ts"])
         h, m = divmod(remaining // 60, 60)
-        await message.answer(f"⏳ Следующий бонус через: <b>{h}ч {m}м</b>", parse_mode="HTML")
+        await message.reply(f"⏳ Следующий бонус через: <b>{h}ч {m}м</b>", parse_mode="HTML")
         return
 
     # Базовые награды
@@ -1302,7 +1302,7 @@ async def cmd_daily(message: Message):
     conn.close()
     xp = apply_xp_bonus(message.from_user.id, 10)
     add_xp(message.from_user.id, xp)
-    await message.answer(
+    await message.reply(
         f"🎁 Ежедневный бонус: <b>+{coins} монет, +{xp} XP</b>!",
         parse_mode="HTML",
     )
@@ -1313,22 +1313,22 @@ async def cmd_give(message: Message):
     ensure_user(message.from_user.id, message.from_user.username or message.from_user.full_name)
     args = message.text.split()
     if len(args) < 3 or not args[1].startswith("@") or not args[2].isdigit():
-        await message.answer("💸 Использование: /give @username [сумма]")
+        await message.reply("💸 Использование: /give @username [сумма]")
         return
     amount = int(args[2])
     if amount <= 0:
-        await message.answer("❌ Сумма должна быть > 0.")
+        await message.reply("❌ Сумма должна быть > 0.")
         return
     sender = get_user(message.from_user.id)
     if sender["balance"] < amount:
-        await message.answer("❌ Недостаточно монет!")
+        await message.reply("❌ Недостаточно монет!")
         return
     target_id = find_user_by_username(args[1])
     if not target_id:
-        await message.answer("❌ Пользователь не найден.")
+        await message.reply("❌ Пользователь не найден.")
         return
     if target_id == message.from_user.id:
-        await message.answer("❌ Нельзя переводить самому себе.")
+        await message.reply("❌ Нельзя переводить самому себе.")
         return
     target_user = get_user(target_id)
     add_balance(message.from_user.id, -amount)
@@ -1344,7 +1344,7 @@ async def cmd_give(message: Message):
         add_xp(message.from_user.id, 20)
         extra_xp_msg = " (+20 XP вам 🎁)"
 
-    await message.answer(
+    await message.reply(
         f"✅ Вы перевели <b>{amount} 🪙</b> пользователю {mention(target_user['username'] or str(target_id), target_id)}!{extra_xp_msg}",
         parse_mode="HTML",
     )
@@ -1358,7 +1358,7 @@ async def cmd_shop(message: Message):
             continue  # Лисий хвост не в продаже
         lines.append(f"{num}. {item['name']} — <b>{item['price']} 🪙</b>\n   <i>{item['desc']}</i>")
     lines.append("\nКупить: /buy [номер]")
-    await message.answer("\n".join(lines), parse_mode="HTML")
+    await message.reply("\n".join(lines), parse_mode="HTML")
 
 def _add_to_inventory(user_id: int, item_id: int):
     """Добавить 1 единицу предмета в инвентарь (upsert)."""
@@ -1398,16 +1398,16 @@ async def cmd_buy(message: Message):
     ensure_user(message.from_user.id, message.from_user.username or message.from_user.full_name)
     args = message.text.split()
     if len(args) < 2 or not args[1].isdigit():
-        await message.answer("🛒 Использование: /buy [номер]")
+        await message.reply("🛒 Использование: /buy [номер]")
         return
     item_id = int(args[1])
     if item_id not in SHOP_ITEMS or item_id == 13:
-        await message.answer("❌ Нет такого предмета. Смотри /shop.")
+        await message.reply("❌ Нет такого предмета. Смотри /shop.")
         return
     item = SHOP_ITEMS[item_id]
     u = get_user(message.from_user.id)
     if u["balance"] < item["price"]:
-        await message.answer(f"❌ Нужно {item['price']} 🪙, у вас {u['balance']} 🪙.")
+        await message.reply(f"❌ Нужно {item['price']} 🪙, у вас {u['balance']} 🪙.")
         return
     add_balance(message.from_user.id, -item["price"])
     _add_to_inventory(message.from_user.id, item_id)
@@ -1436,7 +1436,7 @@ async def cmd_buy(message: Message):
         conn.commit(); conn.close()
         bonus = " Теперь используй /hat каждые 24ч!"
 
-    await message.answer(f"✅ Куплено: {item['name']}!{bonus}", parse_mode="HTML")
+    await message.reply(f"✅ Куплено: {item['name']}!{bonus}", parse_mode="HTML")
     await check_achievements(message.from_user.id, message)
 
 @router.message(Command("inventory"))
@@ -1448,7 +1448,7 @@ async def cmd_inventory(message: Message):
     rows = c.fetchall()
     conn.close()
     if not rows:
-        await message.answer("🎒 Инвентарь пуст.")
+        await message.reply("🎒 Инвентарь пуст.")
         return
     lines = ["🎒 <b>Инвентарь</b>:\n"]
     for item_id, amount in rows:
@@ -1456,7 +1456,7 @@ async def cmd_inventory(message: Message):
         if item:
             lines.append(f"{item_id}. {item['name']} × {amount}")
     lines.append("\nИспользовать: /use [номер]")
-    await message.answer("\n".join(lines), parse_mode="HTML")
+    await message.reply("\n".join(lines), parse_mode="HTML")
 
 # БАГ-ФИКС: /use теперь корректно уменьшает количество и удаляет строку при 0
 @router.message(Command(commands=["use", "use_item"]))
@@ -1464,7 +1464,7 @@ async def cmd_use(message: Message):
     ensure_user(message.from_user.id, message.from_user.username or message.from_user.full_name)
     args = message.text.split()
     if len(args) < 2 or not args[1].isdigit():
-        await message.answer("🎒 Использование: /use [номер]")
+        await message.reply("🎒 Использование: /use [номер]")
         return
     item_id = int(args[1])
 
@@ -1475,7 +1475,7 @@ async def cmd_use(message: Message):
     conn.close()
 
     if not row or row[0] <= 0:
-        await message.answer("❌ У вас нет такого предмета.")
+        await message.reply("❌ У вас нет такого предмета.")
         return
 
     response = await _apply_item_effect(message, item_id)
@@ -1483,7 +1483,7 @@ async def cmd_use(message: Message):
         return
 
     _remove_from_inventory(message.from_user.id, item_id)
-    await message.answer(response, parse_mode="HTML")
+    await message.reply(response, parse_mode="HTML")
 
 async def _apply_item_effect(message: Message, item_id: int) -> Optional[str]:
     """Применить эффект предмета. Возвращает текст ответа или None при ошибке."""
@@ -1492,7 +1492,7 @@ async def _apply_item_effect(message: Message, item_id: int) -> Optional[str]:
         return "🍎 Вы съели яблоко. Хруск! Настроение +100%"
     elif item_id == 2:
         if not message.reply_to_message:
-            await message.answer("🌹 Ответьте на сообщение того, кому хотите подарить розу.")
+            await message.reply("🌹 Ответьте на сообщение того, кому хотите подарить розу.")
             return None
         target = message.reply_to_message.from_user
         ensure_user(target.id, target.username or target.full_name)
@@ -1563,7 +1563,7 @@ async def _apply_item_effect(message: Message, item_id: int) -> Optional[str]:
 async def cmd_hat(message: Message):
     ensure_user(message.from_user.id, message.from_user.username or message.from_user.full_name)
     if not _has_item(message.from_user.id, 10):
-        await message.answer("🎩 У вас нет Магической шляпы. Купите в /shop!")
+        await message.reply("🎩 У вас нет Магической шляпы. Купите в /shop!")
         return
     conn = get_conn()
     c = conn.cursor()
@@ -1574,7 +1574,7 @@ async def cmd_hat(message: Message):
         remaining = 86400 - (now - row[0])
         h, m = divmod(remaining // 60, 60)
         conn.close()
-        await message.answer(f"🎩 Шляпа уже использована. Следующий предмет через {h}ч {m}м.")
+        await message.reply(f"🎩 Шляпа уже использована. Следующий предмет через {h}ч {m}м.")
         return
     gift_id = random.choice(list(SHOP_ITEMS.keys())[:-3])
     _add_to_inventory(message.from_user.id, gift_id)
@@ -1585,7 +1585,7 @@ async def cmd_hat(message: Message):
     )
     conn.commit()
     conn.close()
-    await message.answer(
+    await message.reply(
         f"🎩 Шляпа достала из себя: <b>{SHOP_ITEMS[gift_id]['name']}</b>!",
         parse_mode="HTML",
     )
@@ -1598,17 +1598,17 @@ async def cmd_propose(message: Message):
     match = re.match(r"(?i)^предложить\s+брак\s+@(\S+)", message.text)
     target_username = match.group(1)
     if get_marriage(message.from_user.id):
-        await message.answer("❌ Вы уже состоите в браке!")
+        await message.reply("❌ Вы уже состоите в браке!")
         return
     target_id = find_user_by_username(target_username)
     if not target_id:
-        await message.answer("❌ Пользователь не найден.")
+        await message.reply("❌ Пользователь не найден.")
         return
     if target_id == message.from_user.id:
-        await message.answer("❌ Нельзя жениться на себе.")
+        await message.reply("❌ Нельзя жениться на себе.")
         return
     if get_marriage(target_id):
-        await message.answer(f"❌ @{target_username} уже состоит в браке.")
+        await message.reply(f"❌ @{target_username} уже состоит в браке.")
         return
     t_user = get_user(target_id)
     t_name = t_user["username"] or str(target_id)
@@ -1616,7 +1616,7 @@ async def cmd_propose(message: Message):
         InlineKeyboardButton(text="❤️ Согласиться", callback_data=f"marry_yes_{message.from_user.id}_{target_id}"),
         InlineKeyboardButton(text="💔 Отказаться",  callback_data=f"marry_no_{message.from_user.id}"),
     ]])
-    await message.answer(
+    await message.reply(
         f"💍 {mention(message.from_user.full_name, message.from_user.id)} делает предложение "
         f"{mention(t_name, target_id)}\\!\n\n"
         f"{mention(t_name, target_id)}, ты согласен\\(на\\)?",
@@ -1667,12 +1667,12 @@ async def cmd_marry_info(message: Message):
     ensure_user(message.from_user.id, message.from_user.username or message.from_user.full_name)
     m = get_marriage(message.from_user.id)
     if not m:
-        await message.answer("💔 Вы не состоите в браке.")
+        await message.reply("💔 Вы не состоите в браке.")
         return
     partner_id = m["user2_id"] if m["user1_id"] == message.from_user.id else m["user1_id"]
     partner_name = get_username_by_id(partner_id)
     days = (int(time.time()) - m["married_since"]) // 86400
-    await message.answer(
+    await message.reply(
     f'💍 Вы женаты с <a href="tg://user?id={partner_id}">{partner_name}</a>\n'
     f'Дней вместе: <b>{days}</b>',
     parse_mode="HTML",
@@ -1682,13 +1682,13 @@ async def cmd_marry_info(message: Message):
 async def cmd_divorce(message: Message):
     ensure_user(message.from_user.id, message.from_user.username or message.from_user.full_name)
     if not get_marriage(message.from_user.id):
-        await message.answer("💔 Вы не состоите в браке.")
+        await message.reply("💔 Вы не состоите в браке.")
         return
     kb = InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text="✅ Да, развестись", callback_data=f"divorce_confirm_{message.from_user.id}"),
         InlineKeyboardButton(text="❌ Отмена",          callback_data="divorce_cancel"),
     ]])
-    await message.answer("⚠️ Уверены, что хотите развестись?", reply_markup=kb)
+    await message.reply("⚠️ Уверены, что хотите развестись?", reply_markup=kb)
 
 @router.callback_query(F.data.startswith("divorce_confirm_"))
 async def cb_divorce_confirm(call: CallbackQuery):
@@ -1719,13 +1719,13 @@ async def cmd_top_marriages(message: Message):
     )
     rows = c.fetchall(); conn.close()
     if not rows:
-        await message.answer("💍 Браков ещё нет!")
+        await message.reply("💍 Браков ещё нет!")
         return
     lines = ["💍 <b>Топ долгих браков:</b>\n"]
     for i, (n1, id1, n2, id2, ts) in enumerate(rows, 1):
         days = (int(time.time()) - ts) // 86400
         lines.append(f"{i}. {n1 or '???'} & {n2 or '???'} — {days} дн.")
-    await message.answer("\n".join(lines), parse_mode="HTML")
+    await message.reply("\n".join(lines), parse_mode="HTML")
 
 # ─────────────────────────── АДМИН-КОМАНДЫ ────────────────────────
 
@@ -1733,7 +1733,7 @@ def admin_only(func):
     """Декоратор: только для администраторов."""
     async def wrapper(message: Message):
         if not is_admin(message.from_user.id):
-            await message.answer("🚫 Нет доступа.")
+            await message.reply("🚫 Нет доступа.")
             return
         await func(message)
     wrapper.__name__ = func.__name__
@@ -1744,89 +1744,89 @@ def admin_only(func):
 async def cmd_add_money(message: Message):
     args = message.text.split()
     if len(args) < 3 or not args[2].lstrip("-").isdigit():
-        await message.answer("Использование: /add_money @username [сумма]")
+        await message.reply("Использование: /add_money @username [сумма]")
         return
     target_id = find_user_by_username(args[1])
     if not target_id:
-        await message.answer("❌ Пользователь не найден.")
+        await message.reply("❌ Пользователь не найден.")
         return
     amount = int(args[2])
     add_balance(target_id, amount)
     log_admin_action(message.from_user.id, "add_money", target_id, str(amount))
-    await message.answer(f"✅ Баланс {args[1]} изменён на {amount:+} 🪙")
+    await message.reply(f"✅ Баланс {args[1]} изменён на {amount:+} 🪙")
 
 @router.message(Command("remove_money"))
 @admin_only
 async def cmd_remove_money(message: Message):
     args = message.text.split()
     if len(args) < 3 or not args[2].isdigit():
-        await message.answer("Использование: /remove_money @username [сумма]")
+        await message.reply("Использование: /remove_money @username [сумма]")
         return
     target_id = find_user_by_username(args[1])
     if not target_id:
-        await message.answer("❌ Пользователь не найден.")
+        await message.reply("❌ Пользователь не найден.")
         return
     amount = int(args[2])
     add_balance(target_id, -amount)
     log_admin_action(message.from_user.id, "remove_money", target_id, f"-{amount}")
-    await message.answer(f"✅ Снято {amount} 🪙 с {args[1]}")
+    await message.reply(f"✅ Снято {amount} 🪙 с {args[1]}")
 
 @router.message(Command("add_xp"))
 @admin_only
 async def cmd_add_xp(message: Message):
     args = message.text.split()
     if len(args) < 3 or not args[2].isdigit():
-        await message.answer("Использование: /add_xp @username [количество]")
+        await message.reply("Использование: /add_xp @username [количество]")
         return
     target_id = find_user_by_username(args[1])
     if not target_id:
-        await message.answer("❌ Пользователь не найден.")
+        await message.reply("❌ Пользователь не найден.")
         return
     amount = int(args[2])
     add_xp(target_id, amount)
     log_admin_action(message.from_user.id, "add_xp", target_id, str(amount))
-    await message.answer(f"✅ +{amount} XP начислено {args[1]}")
+    await message.reply(f"✅ +{amount} XP начислено {args[1]}")
 
 @router.message(Command("reset_inventory"))
 @admin_only
 async def cmd_reset_inventory(message: Message):
     args = message.text.split()
     if len(args) < 2:
-        await message.answer("Использование: /reset_inventory @username")
+        await message.reply("Использование: /reset_inventory @username")
         return
     target_id = find_user_by_username(args[1])
     if not target_id:
-        await message.answer("❌ Пользователь не найден.")
+        await message.reply("❌ Пользователь не найден.")
         return
     conn = get_conn(); c = conn.cursor()
     c.execute("DELETE FROM inventory WHERE user_id=?", (target_id,))
     conn.commit(); conn.close()
     log_admin_action(message.from_user.id, "reset_inventory", target_id)
-    await message.answer(f"✅ Инвентарь {args[1]} очищен.")
+    await message.reply(f"✅ Инвентарь {args[1]} очищен.")
 
 @router.message(Command("reset_daily"))
 @admin_only
 async def cmd_reset_daily(message: Message):
     args = message.text.split()
     if len(args) < 2:
-        await message.answer("Использование: /reset_daily @username")
+        await message.reply("Использование: /reset_daily @username")
         return
     target_id = find_user_by_username(args[1])
     if not target_id:
-        await message.answer("❌ Пользователь не найден.")
+        await message.reply("❌ Пользователь не найден.")
         return
     conn = get_conn(); c = conn.cursor()
     c.execute("UPDATE users SET daily_ts=0 WHERE user_id=?", (target_id,))
     conn.commit(); conn.close()
     log_admin_action(message.from_user.id, "reset_daily", target_id)
-    await message.answer(f"✅ Ежедневный бонус {args[1]} сброшен.")
+    await message.reply(f"✅ Ежедневный бонус {args[1]} сброшен.")
 
 @router.message(Command("broadcast"))
 @admin_only
 async def cmd_broadcast(message: Message):
     args = message.text.split(maxsplit=1)
     if len(args) < 2:
-        await message.answer("Использование: /broadcast [текст сообщения]")
+        await message.reply("Использование: /broadcast [текст сообщения]")
         return
     text = args[1]
     conn = get_conn(); c = conn.cursor()
@@ -1843,7 +1843,7 @@ async def cmd_broadcast(message: Message):
         except Exception:
             failed += 1
     log_admin_action(message.from_user.id, "broadcast", 0, f"sent={sent}, failed={failed}")
-    await message.answer(f"📢 Рассылка завершена. Отправлено: {sent}, ошибок: {failed}.")
+    await message.reply(f"📢 Рассылка завершена. Отправлено: {sent}, ошибок: {failed}.")
 
 # ═══════════════════════════════════════════════════════════════════
 # ─────────────────── НОВЫЕ КОМАНДЫ v3 ─────────────────────────────
@@ -1870,7 +1870,7 @@ async def cmd_rank(message: Message):
         lines.append(f"🔺 До него: <b>{levels_needed}</b> уровней")
     else:
         lines.append("🌟 Вы достигли высшего ранга!")
-    await message.answer("\n".join(lines), parse_mode="HTML")
+    await message.reply("\n".join(lines), parse_mode="HTML")
 
 # ──────────────────────── /ACHIEVEMENTS ───────────────────────────
 
@@ -1910,14 +1910,14 @@ async def cmd_achievements(message: Message):
     total_earned = c.fetchone()[0]; conn.close()
     lines.append(f"\n📊 Получено: <b>{total_earned}/{len(ACHIEVEMENTS)}</b>")
     lines.append("ℹ️ Подробнее: /achievement [номер]")
-    await message.answer("\n".join(lines), parse_mode="HTML")
+    await message.reply("\n".join(lines), parse_mode="HTML")
 
 @router.message(Command("achievement"))
 async def cmd_achievement_detail(message: Message):
     ensure_user(message.from_user.id, message.from_user.username or message.from_user.full_name)
     args = message.text.split(maxsplit=1)
     if len(args) < 2:
-        await message.answer("ℹ️ Использование: /achievement [номер от 1 до 12]")
+        await message.reply("ℹ️ Использование: /achievement [номер от 1 до 12]")
         return
     # Поиск по номеру или названию
     query = args[1].strip()
@@ -1930,7 +1930,7 @@ async def cmd_achievement_detail(message: Message):
                 ach_id = aid
                 break
     if not ach_id or ach_id not in ACHIEVEMENTS:
-        await message.answer("❌ Достижение не найдено. Введите номер от 1 до 12.")
+        await message.reply("❌ Достижение не найдено. Введите номер от 1 до 12.")
         return
     ach = ACHIEVEMENTS[ach_id]
     earned = has_achievement(message.from_user.id, ach_id)
@@ -1945,7 +1945,7 @@ async def cmd_achievement_detail(message: Message):
     if row:
         dt = datetime.fromtimestamp(row[0], tz=timezone.utc).strftime("%d.%m.%Y")
         date_str = f"\n📅 Дата получения: {dt}"
-    await message.answer(
+    await message.reply(
         f"{ach['icon']} <b>{ach['name']}</b>\n"
         f"Статус: {status}{date_str}\n\n"
         f"📋 Условие: {ach['desc']}\n"
@@ -1964,7 +1964,7 @@ async def cmd_stats(message: Message):
     if len(args) > 1 and args[1].startswith("@"):
         target_id = find_user_by_username(args[1])
         if not target_id:
-            await message.answer("❌ Пользователь не найден.")
+            await message.reply("❌ Пользователь не найден.")
             return
         target_name = get_username_by_id(target_id)
     else:
@@ -1973,7 +1973,7 @@ async def cmd_stats(message: Message):
 
     u = get_user(target_id)
     if not u:
-        await message.answer("❌ Пользователь не найден.")
+        await message.reply("❌ Пользователь не найден.")
         return
 
     stats = get_user_stats(target_id)
@@ -1994,7 +1994,7 @@ async def cmd_stats(message: Message):
         days_married = (int(time.time()) - m["married_since"]) // 86400
         marriage_info = f"{partner_name} ({days_married} дн.)"
 
-    await message.answer(
+    await message.reply(
         f"📊 <b>Статистика: {target_name}</b>\n\n"
         f"🏆 Уровень: <b>{level}</b> ({u['xp']} XP)\n"
         f"🦊 Ранг: {rank_emoji} <b>{rank_name}</b>\n"
@@ -2018,7 +2018,7 @@ async def cmd_top_activity(message: Message):
     rows = c.fetchall()
     conn.close()
     if not rows:
-        await message.answer("📊 Статистика пуста.")
+        await message.reply("📊 Статистика пуста.")
         return
     lines = ["📊 <b>Топ по активности (последний /daily):</b>\n"]
     now = int(time.time())
@@ -2029,7 +2029,7 @@ async def cmd_top_activity(message: Message):
         else:
             when = "давно"
         lines.append(f"{i}. {name or '???'} — {when}")
-    await message.answer("\n".join(lines), parse_mode="HTML")
+    await message.reply("\n".join(lines), parse_mode="HTML")
 
 @router.message(Command("top_rp_actions"))
 async def cmd_top_rp_actions(message: Message):
@@ -2043,12 +2043,12 @@ async def cmd_top_rp_actions(message: Message):
     rows = c.fetchall()
     conn.close()
     if not rows:
-        await message.answer("🎭 Статистика РП пуста.")
+        await message.reply("🎭 Статистика РП пуста.")
         return
     lines = ["🎭 <b>Топ по РП-действиям:</b>\n"]
     for i, (name, cnt) in enumerate(rows, 1):
         lines.append(f"{i}. {name or '???'} — {cnt} действий")
-    await message.answer("\n".join(lines), parse_mode="HTML")
+    await message.reply("\n".join(lines), parse_mode="HTML")
 
 # ─────────────────── КАСТОМНЫЕ РП-КОМАНДЫ ─────────────────────────
 
@@ -2057,7 +2057,7 @@ async def cmd_create_rp(message: Message):
     ensure_user(message.from_user.id, message.from_user.username or message.from_user.full_name)
     args = message.text.split(maxsplit=2)
     if len(args) < 3:
-        await message.answer(
+        await message.reply(
             "✍️ Использование: /create_rp [слово] [текст ответа]\n\n"
             "Слово: 2-20 символов, только русские буквы, без пробелов.\n"
             "Пример: /create_rp мяукнуть {actor} мяукает на {target} 🐱"
@@ -2069,12 +2069,12 @@ async def cmd_create_rp(message: Message):
 
     # Валидация ключевого слова
     if not re.match(r'^[а-яёА-ЯЁ]{2,20}$', keyword):
-        await message.answer("❌ Слово должно содержать только русские буквы (2-20 символов), без пробелов.")
+        await message.reply("❌ Слово должно содержать только русские буквы (2-20 символов), без пробелов.")
         return
 
     # Проверяем конфликт со встроенными командами
     if keyword in RP_ALIAS:
-        await message.answer("❌ Это слово уже занято встроенной РП-командой.")
+        await message.reply("❌ Это слово уже занято встроенной РП-командой.")
         return
 
     uid = message.from_user.id
@@ -2085,7 +2085,7 @@ async def cmd_create_rp(message: Message):
     cnt = c.fetchone()[0]
     conn.close()
     if cnt >= 10:
-        await message.answer("❌ Достигнут лимит кастомных команд (10). Удалите старую: /delete_rp [слово]")
+        await message.reply("❌ Достигнут лимит кастомных команд (10). Удалите старую: /delete_rp [слово]")
         return
 
     # Проверяем уникальность для пользователя
@@ -2094,7 +2094,7 @@ async def cmd_create_rp(message: Message):
     exists = c.fetchone()
     conn.close()
     if exists:
-        await message.answer(f"❌ У вас уже есть команда «{keyword}». Удалите старую: /delete_rp {keyword}")
+        await message.reply(f"❌ У вас уже есть команда «{keyword}». Удалите старую: /delete_rp {keyword}")
         return
 
     # Сохраняем
@@ -2105,7 +2105,7 @@ async def cmd_create_rp(message: Message):
     )
     conn.commit(); conn.close()
 
-    await message.answer(
+    await message.reply(
         f"✅ Кастомная РП-команда создана!\n"
         f"Ключевое слово: <b>{keyword}</b>\n"
         f"Используй: напиши <code>{keyword}</code> в ответ на сообщение пользователя.",
@@ -2123,21 +2123,21 @@ async def cmd_my_rp(message: Message):
     )
     rows = c.fetchall(); conn.close()
     if not rows:
-        await message.answer("🎭 У вас нет кастомных РП-команд.\nСоздать: /create_rp [слово] [текст]")
+        await message.reply("🎭 У вас нет кастомных РП-команд.\nСоздать: /create_rp [слово] [текст]")
         return
     lines = [f"🎭 <b>Ваши кастомные РП-команды</b> ({len(rows)}/10):\n"]
     for kw, resp, uses in rows:
         short_resp = resp[:40] + "..." if len(resp) > 40 else resp
         lines.append(f"• <b>{kw}</b> (используется: {uses})\n  <i>{short_resp}</i>")
     lines.append("\nУдалить: /delete_rp [слово]")
-    await message.answer("\n".join(lines), parse_mode="HTML")
+    await message.reply("\n".join(lines), parse_mode="HTML")
 
 @router.message(Command("delete_rp"))
 async def cmd_delete_rp(message: Message):
     ensure_user(message.from_user.id, message.from_user.username or message.from_user.full_name)
     args = message.text.split()
     if len(args) < 2:
-        await message.answer("❌ Использование: /delete_rp [слово]")
+        await message.reply("❌ Использование: /delete_rp [слово]")
         return
     keyword = args[1].strip().lower()
     conn = get_conn(); c = conn.cursor()
@@ -2145,9 +2145,9 @@ async def cmd_delete_rp(message: Message):
     deleted = c.rowcount
     conn.commit(); conn.close()
     if deleted:
-        await message.answer(f"✅ Команда «{keyword}» удалена.")
+        await message.reply(f"✅ Команда «{keyword}» удалена.")
     else:
-        await message.answer(f"❌ Команда «{keyword}» не найдена.")
+        await message.reply(f"❌ Команда «{keyword}» не найдена.")
 
 @router.message(Command("top_rp"))
 async def cmd_top_rp(message: Message):
@@ -2160,12 +2160,12 @@ async def cmd_top_rp(message: Message):
     )
     rows = c.fetchall(); conn.close()
     if not rows:
-        await message.answer("🎭 Кастомных команд ещё нет.")
+        await message.reply("🎭 Кастомных команд ещё нет.")
         return
     lines = ["🎭 <b>Топ кастомных РП-команд:</b>\n"]
     for i, (kw, name, uses) in enumerate(rows, 1):
         lines.append(f"{i}. <b>{kw}</b> от {name or '???'} — {uses} раз")
-    await message.answer("\n".join(lines), parse_mode="HTML")
+    await message.reply("\n".join(lines), parse_mode="HTML")
 
 # ─────────────────── БОНУС ДНЯ ────────────────────────────────────
 
@@ -2177,7 +2177,7 @@ async def cmd_daily_bonus(message: Message):
     existing = get_active_bonus(uid)
     if existing:
         display = get_bonus_display(existing)
-        await message.answer(
+        await message.reply(
             f"🎁 Ваш бонус дня уже активен:\n<b>{display}</b>\n\n"
             f"Он действует до 23:59 UTC сегодня.",
             parse_mode="HTML",
@@ -2186,11 +2186,11 @@ async def cmd_daily_bonus(message: Message):
 
     bonus_type = activate_bonus(uid)
     if not bonus_type:
-        await message.answer("⚠️ Не удалось активировать бонус. Попробуйте позже.")
+        await message.reply("⚠️ Не удалось активировать бонус. Попробуйте позже.")
         return
 
     display = get_bonus_display(bonus_type)
-    await message.answer(
+    await message.reply(
         f"🎁 <b>Бонус дня активирован!</b>\n\n{display}\n\n"
         f"Действует до 23:59 UTC. Удачи! ✨",
         parse_mode="HTML",
@@ -2212,14 +2212,14 @@ async def cmd_bonus_info(message: Message):
 
     if active:
         display = get_bonus_display(active)
-        await message.answer(
+        await message.reply(
             f"🎁 <b>Текущий бонус:</b>\n{display}\n\n"
             f"⏰ До конца дня: <b>{h}ч {m}м</b>\n\n"
             f"Завтра у вас будет новый бонус!",
             parse_mode="HTML",
         )
     else:
-        await message.answer(
+        await message.reply(
             f"🎁 У вас нет активного бонуса.\n\n"
             f"Активировать: /daily_bonus\n"
             f"⏰ До сброса: <b>{h}ч {m}м</b>",
@@ -2294,7 +2294,7 @@ async def rp_handler(message: Message):
         # Статистика: РП-действие
         stat_increment(actor_id, "total_rp_actions")
 
-        await message.answer(text_msg, parse_mode=parse)
+        await message.reply(text_msg, parse_mode=parse)
         await check_achievements(actor_id, message)
         return
 
@@ -2334,7 +2334,7 @@ async def rp_handler(message: Message):
         add_xp(uid, xp)
         stat_increment(uid, "total_rp_actions")
 
-        await message.answer(f"🎭 {final_text}", parse_mode="HTML")
+        await message.reply(f"🎭 {final_text}", parse_mode="HTML")
         await check_achievements(uid, message)
 
 # ──────────────────────────── ЗАПУСК ──────────────────────────────
