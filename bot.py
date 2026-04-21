@@ -34,6 +34,12 @@ from aiogram.types import (
 )
 from dotenv import load_dotenv
 
+from aiogram.filters import BaseFilter
+
+class AdminInputFilter(BaseFilter):
+    async def __call__(self, message: Message) -> bool:
+        return message.from_user.id in admin_actions
+        
 # ─────────────────────────── НАСТРОЙКА ────────────────────────────
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -2132,20 +2138,11 @@ async def admin_callback(call: CallbackQuery):
     await call.answer()
 
 
-@router.message(F.text, ~F.text.startswith('/'))
+@router.message(AdminInputFilter())
 async def admin_input_handler(message: Message):
-    """Обрабатывает ввод от админа в рамках админ-панели."""
+    """Обрабатывает ввод от админа в рамках админ-панели (только для админов с активным действием)."""
     user_id = message.from_user.id
-    if not is_admin(user_id):
-        return
-
-    # Игнорируем команды (начинаются с /)
-    if message.text.startswith('/'):
-        return
-
-    if user_id not in admin_actions:
-        return
-
+    # Уже отфильтровано, что user_id в admin_actions
     action_data = admin_actions[user_id]
     action = action_data["action"]
     step = action_data.get("step", 1)
