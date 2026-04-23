@@ -489,6 +489,19 @@ def format_quest_lines(quests: list[dict]) -> list[str]:
         )
     return lines
 
+def _add_to_inventory(user_id: int, item_id: int, amount: int = 1):
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute("""
+        INSERT INTO inventory (user_id, item_id, amount)
+        VALUES (?, ?, ?)
+        ON CONFLICT(user_id, item_id)
+        DO UPDATE SET amount = amount + ?
+    """, (user_id, item_id, amount, amount))
+
+    conn.commit()
+    conn.close()
 # ─────────────────── РП-ДЕЙСТВИЯ ──────────────────────────────────
 
 
