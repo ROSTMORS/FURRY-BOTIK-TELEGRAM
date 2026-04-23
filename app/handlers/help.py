@@ -1,4 +1,4 @@
-from aiogram import Router, F
+from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 
 from app.core import router
@@ -33,7 +33,7 @@ def back_kb():
 
 # ─────────────────── /help ───────────────────
 
-@router.message(F.text == "/help")
+@router.message(Command("help"))
 async def cmd_help(message: Message):
     await message.answer(
         "📖 <b>ПОМОЩЬ ПО БОТУ</b>\n\n"
