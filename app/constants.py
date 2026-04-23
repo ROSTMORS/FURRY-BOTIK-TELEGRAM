@@ -161,3 +161,12 @@ DAILY_BONUSES = [
     ("double_xp",     "⚡ Двойной опыт: весь XP x2",                  10),
     ("protect_xp",    "🛡️ День защиты: 'защитить' даёт +15 XP",        5),
 ]
+
+def get_rank(level: int):
+    current = FURRY_RANKS[0]
+    for lvl, name, emoji in FURRY_RANKS:
+        if level >= lvl:
+            current = (lvl, name, emoji)
+        else:
+            break
+    return current[1], current[2]
