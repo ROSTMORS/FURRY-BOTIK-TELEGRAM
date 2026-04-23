@@ -12,7 +12,7 @@ from typing import Optional
 from aiogram import F
 from aiogram.filters import Command, CommandStart
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
-
+from app.constants import FURRY_RANKS, ACHIEVEMENTS, RP_ACTIONS, RP_ALIAS, RP_PATTERN, get_rank
 from app.core import ADMIN_IDS, DB_FILE, admin_actions, bot, logger, router, AdminInputFilter
 from app.db import get_conn
 from app.constants import (
