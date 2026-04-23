@@ -39,7 +39,10 @@ def back_kb() -> InlineKeyboardMarkup:
 @router.message(Command("help"))
 async def cmd_help(message: Message):
     await message.reply(
-        "📖 <b>ПОМОЩЬ ПО БОТУ</b>
+    "📖 <b>ПОМОЩЬ ПО БОТУ</b>\n\nВыбери раздел 👇",
+    reply_markup=help_kb(),
+    parse_mode="HTML"
+)
 
 "
         "Выбери раздел ниже 👇",
